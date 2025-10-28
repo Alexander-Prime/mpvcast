@@ -25,4 +25,12 @@ impl Queue {
     pub fn iter(&self) -> impl Iterator<Item = &QueueItem> {
         self.0.iter()
     }
+
+    pub fn get(&self, index: usize) -> Option<&QueueItem> {
+        self.0.get(index)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
