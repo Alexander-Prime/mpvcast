@@ -11,6 +11,7 @@ mod queue;
 mod player;
 mod resolver;
 mod models;
+mod mpv;
 
 use crate::queue::{Queue, QueueItem};
 use crate::player::Player;
