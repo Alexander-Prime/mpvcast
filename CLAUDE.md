@@ -46,16 +46,19 @@ A hand-rolled tokio client (`src/mpv/`) talks to mpv over the Unix socket:
 - Asynchronous mpv events (`end-file`, property changes, etc.) are routed to
   a `tokio::sync::broadcast` channel so multiple subscribers can observe
   them.
-- The client exposes typed helpers (`get_property`, `set_property`,
-  `loadfile`, `playlist_clear`, `playlist_next`, `playlist_prev`, `stop`,
-  `seek`) on top of a generic `send`.
+- The client exposes typed helpers for the commands mpvcast uses
+  (`get_property`, `set_property`, `observe_property`, `loadfile`,
+  playlist manipulation, `seek`, etc.) on top of a generic `send`.
 
 ### State Ownership
 
 mpv's internal playlist is the source of truth for what's queued and what's
-playing. The HTTP `GET /queue` and `GET /status` handlers read mpv's
-`playlist`, `playlist-pos`, `pause`, `time-pos`, etc. properties on demand.
-`AppState` is `Arc<MpvClient>`.
+playing. `MpvClient` observes the properties that back the API surface
+(`pause`, `time-pos`, `duration`, `volume`, `mute`, `playlist`,
+`playlist-pos`, `media-title`) and maintains a cached snapshot updated by
+mpv `property-change` events. `GET /status`, `GET /queue`, and the SSE
+`/events` stream all read from that snapshot rather than issuing fresh
+`get_property` calls per request. `AppState` is `Arc<MpvClient>`.
 
 ### Server Design
 
@@ -81,7 +84,8 @@ PATCH  /status      update any subset of `position` (seconds, absolute seek), `v
   "position": float | null,
   "duration": float | null,
   "volume": integer,
-  "muted": boolean
+  "muted": boolean,
+  "errors": [{ "message": string }]
 }
 ```
 
@@ -98,6 +102,8 @@ PATCH  /status      update any subset of `position` (seconds, absolute seek), `v
   range can exceed 100).
 - `muted`: whether audio output is silenced. Independent of `volume` —
   unmuting restores audio at the existing volume setting.
+- `errors`: playback errors reported by mpv (unresolvable URL, decoder
+  failure, etc.). Cleared when a new item begins playing.
 
 `PATCH /status` with `position` while `state` is `idle` is a no-op.
 
@@ -132,6 +138,15 @@ POST   /playback/play       set pause=false; if idle and queue non-empty, start 
 POST   /playback/pause      set pause=true
 POST   /playback/next       playlist-next
 POST   /playback/previous   playlist-prev
+POST   /playback/seek       seek by delta seconds (body: {"delta": float}); positive = forward, negative = back
+```
+
+Real-time updates:
+
+```
+GET    /events      Server-Sent Events stream; emits the current status
+                    snapshot (same shape as `GET /status`) whenever it
+                    changes
 ```
 
 ## External Dependencies
