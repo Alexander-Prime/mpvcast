@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, broadcast, oneshot};
 
-use crate::mpv::protocol::{Command, Message, Reply};
+use crate::mpv::protocol::{Command, Event, Message, Reply};
 
 #[derive(Debug, thiserror::Error)]
 pub enum MpvError {
@@ -31,6 +31,7 @@ pub struct MpvClient {
     writer: Mutex<Box<dyn AsyncWrite + Send + Unpin>>,
     next_request_id: AtomicU64,
     pending: Pending,
+    event_tx: broadcast::Sender<Event>,
 }
 
 impl MpvClient {
@@ -40,12 +41,18 @@ impl MpvClient {
     {
         let (reader, writer) = tokio::io::split(stream);
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
-        tokio::spawn(reader_loop(reader, Arc::clone(&pending)));
+        let (event_tx, _) = broadcast::channel(128);
+        tokio::spawn(reader_loop(reader, Arc::clone(&pending), event_tx.clone()));
         Self {
             writer: Mutex::new(Box::new(writer)),
             next_request_id: AtomicU64::new(1),
             pending,
+            event_tx,
         }
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<Event> {
+        self.event_tx.subscribe()
     }
 
     pub async fn send(&self, args: Vec<Value>) -> Result<Value> {
@@ -80,7 +87,11 @@ impl MpvClient {
     }
 }
 
-async fn reader_loop<R: AsyncRead + Unpin>(reader: R, pending: Pending) {
+async fn reader_loop<R: AsyncRead + Unpin>(
+    reader: R,
+    pending: Pending,
+    event_tx: broadcast::Sender<Event>,
+) {
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
     loop {
@@ -100,8 +111,8 @@ async fn reader_loop<R: AsyncRead + Unpin>(reader: R, pending: Pending) {
                     let _ = tx.send(reply);
                 }
             }
-            Ok(Message::Event(_)) => {
-                // Step 4 wires events to a broadcast channel.
+            Ok(Message::Event(event)) => {
+                let _ = event_tx.send(event);
             }
             Err(_) => {
                 // Malformed line; skip.
@@ -168,6 +179,53 @@ mod tests {
             Err(MpvError::Mpv(msg)) => assert_eq!(msg, "property unavailable"),
             other => panic!("expected MpvError::Mpv, got {:?}", other),
         }
+        mpv_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn subscriber_receives_events() {
+        let (client_side, mpv_side) = tokio::io::duplex(1024);
+        let client = MpvClient::new(client_side);
+        let mut rx = client.subscribe();
+
+        let mpv_task = tokio::spawn(async move {
+            let (_read_half, mut write_half) = tokio::io::split(mpv_side);
+            let event = format!("{}\n", json!({"event": "end-file", "reason": "eof"}));
+            write_half.write_all(event.as_bytes()).await.unwrap();
+        });
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for event")
+            .unwrap();
+        assert_eq!(event.event, "end-file");
+        assert_eq!(event.extra.get("reason"), Some(&json!("eof")));
+        mpv_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn multiple_subscribers_each_receive_events() {
+        let (client_side, mpv_side) = tokio::io::duplex(1024);
+        let client = MpvClient::new(client_side);
+        let mut rx1 = client.subscribe();
+        let mut rx2 = client.subscribe();
+
+        let mpv_task = tokio::spawn(async move {
+            let (_read_half, mut write_half) = tokio::io::split(mpv_side);
+            let event = format!("{}\n", json!({"event": "idle"}));
+            write_half.write_all(event.as_bytes()).await.unwrap();
+        });
+
+        let e1 = tokio::time::timeout(std::time::Duration::from_secs(1), rx1.recv())
+            .await
+            .expect("timed out waiting for event on rx1")
+            .unwrap();
+        let e2 = tokio::time::timeout(std::time::Duration::from_secs(1), rx2.recv())
+            .await
+            .expect("timed out waiting for event on rx2")
+            .unwrap();
+        assert_eq!(e1.event, "idle");
+        assert_eq!(e2.event, "idle");
         mpv_task.await.unwrap();
     }
 
