@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, broadcast, oneshot};
 
@@ -24,6 +24,27 @@ pub enum MpvError {
 }
 
 pub type Result<T> = std::result::Result<T, MpvError>;
+
+/// A duration in seconds that may be negative. Used for relative seeks,
+/// where a positive value means forward and a negative value means back.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SignedDuration(f64);
+
+impl SignedDuration {
+    pub fn from_secs_f64(secs: f64) -> Self {
+        Self(secs)
+    }
+
+    pub fn as_secs_f64(self) -> f64 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Seek {
+    Absolute(std::time::Duration),
+    Relative(SignedDuration),
+}
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Reply>>>>;
 
@@ -53,6 +74,52 @@ impl MpvClient {
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.event_tx.subscribe()
+    }
+
+    pub async fn get_property(&self, name: &str) -> Result<Value> {
+        self.send(vec![json!("get_property"), json!(name)]).await
+    }
+
+    pub async fn set_property<T: Into<Value>>(&self, name: &str, value: T) -> Result<()> {
+        self.send(vec![json!("set_property"), json!(name), value.into()])
+            .await?;
+        Ok(())
+    }
+
+    pub async fn loadfile(&self, url: &str) -> Result<()> {
+        self.send(vec![json!("loadfile"), json!(url), json!("append")])
+            .await?;
+        Ok(())
+    }
+
+    pub async fn playlist_clear(&self) -> Result<()> {
+        self.send(vec![json!("playlist-clear")]).await?;
+        Ok(())
+    }
+
+    pub async fn playlist_next(&self) -> Result<()> {
+        self.send(vec![json!("playlist-next")]).await?;
+        Ok(())
+    }
+
+    pub async fn playlist_prev(&self) -> Result<()> {
+        self.send(vec![json!("playlist-prev")]).await?;
+        Ok(())
+    }
+
+    pub async fn stop(&self) -> Result<()> {
+        self.send(vec![json!("stop")]).await?;
+        Ok(())
+    }
+
+    pub async fn seek(&self, seek: Seek) -> Result<()> {
+        let (target, mode) = match seek {
+            Seek::Absolute(d) => (d.as_secs_f64(), "absolute"),
+            Seek::Relative(d) => (d.as_secs_f64(), "relative"),
+        };
+        self.send(vec![json!("seek"), json!(target), json!(mode)])
+            .await?;
+        Ok(())
     }
 
     pub async fn send(&self, args: Vec<Value>) -> Result<Value> {
@@ -125,6 +192,33 @@ async fn reader_loop<R: AsyncRead + Unpin>(
 mod tests {
     use super::*;
     use serde_json::json;
+    use tokio::io::DuplexStream;
+    use tokio::task::JoinHandle;
+
+    /// Spawn a fake mpv that reads one command, replies with `reply_data`,
+    /// then asserts the `command` array matched `expected_command`. Reply is
+    /// sent before the assertion so a mismatched command still unblocks the
+    /// client — the test fails via the joined task's panic, not a hang.
+    fn scripted_mpv(
+        mpv_side: DuplexStream,
+        expected_command: Value,
+        reply_data: Value,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let (read_half, mut write_half) = tokio::io::split(mpv_side);
+            let mut reader = BufReader::new(read_half);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let cmd: Value = serde_json::from_str(line.trim()).unwrap();
+            let id = cmd["request_id"].as_u64().unwrap();
+            let reply = format!(
+                "{}\n",
+                json!({"error": "success", "data": reply_data, "request_id": id})
+            );
+            write_half.write_all(reply.as_bytes()).await.unwrap();
+            assert_eq!(cmd["command"], expected_command);
+        })
+    }
 
     #[tokio::test]
     async fn send_returns_data_on_successful_reply() {
@@ -266,6 +360,132 @@ mod tests {
         let r2 = h2.await.unwrap().unwrap();
         assert_eq!(r1, json!("alpha"));
         assert_eq!(r2, json!("beta"));
+        mpv_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_property_sends_expected_command() {
+        let (client_side, mpv_side) = tokio::io::duplex(1024);
+        let client = MpvClient::new(client_side);
+        let mpv_task = scripted_mpv(
+            mpv_side,
+            json!(["get_property", "pause"]),
+            json!(true),
+        );
+        assert_eq!(client.get_property("pause").await.unwrap(), json!(true));
+        mpv_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_property_sends_expected_command() {
+        let (client_side, mpv_side) = tokio::io::duplex(1024);
+        let client = MpvClient::new(client_side);
+        let mpv_task = scripted_mpv(
+            mpv_side,
+            json!(["set_property", "pause", true]),
+            json!(null),
+        );
+        client.set_property("pause", true).await.unwrap();
+        mpv_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn loadfile_appends_by_default() {
+        let (client_side, mpv_side) = tokio::io::duplex(1024);
+        let client = MpvClient::new(client_side);
+        let mpv_task = scripted_mpv(
+            mpv_side,
+            json!(["loadfile", "https://example.com/video", "append"]),
+            json!(null),
+        );
+        client
+            .loadfile("https://example.com/video")
+            .await
+            .unwrap();
+        mpv_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn playlist_clear_sends_expected_command() {
+        let (client_side, mpv_side) = tokio::io::duplex(1024);
+        let client = MpvClient::new(client_side);
+        let mpv_task = scripted_mpv(mpv_side, json!(["playlist-clear"]), json!(null));
+        client.playlist_clear().await.unwrap();
+        mpv_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn playlist_next_sends_expected_command() {
+        let (client_side, mpv_side) = tokio::io::duplex(1024);
+        let client = MpvClient::new(client_side);
+        let mpv_task = scripted_mpv(mpv_side, json!(["playlist-next"]), json!(null));
+        client.playlist_next().await.unwrap();
+        mpv_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn playlist_prev_sends_expected_command() {
+        let (client_side, mpv_side) = tokio::io::duplex(1024);
+        let client = MpvClient::new(client_side);
+        let mpv_task = scripted_mpv(mpv_side, json!(["playlist-prev"]), json!(null));
+        client.playlist_prev().await.unwrap();
+        mpv_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stop_sends_expected_command() {
+        let (client_side, mpv_side) = tokio::io::duplex(1024);
+        let client = MpvClient::new(client_side);
+        let mpv_task = scripted_mpv(mpv_side, json!(["stop"]), json!(null));
+        client.stop().await.unwrap();
+        mpv_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn seek_absolute_sends_absolute_flag() {
+        let (client_side, mpv_side) = tokio::io::duplex(1024);
+        let client = MpvClient::new(client_side);
+        let mpv_task = scripted_mpv(
+            mpv_side,
+            json!(["seek", 30.5, "absolute"]),
+            json!(null),
+        );
+        client
+            .seek(Seek::Absolute(std::time::Duration::from_secs_f64(30.5)))
+            .await
+            .unwrap();
+        mpv_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn seek_relative_sends_relative_flag() {
+        let (client_side, mpv_side) = tokio::io::duplex(1024);
+        let client = MpvClient::new(client_side);
+        let mpv_task = scripted_mpv(
+            mpv_side,
+            json!(["seek", 10.0, "relative"]),
+            json!(null),
+        );
+        client
+            .seek(Seek::Relative(SignedDuration::from_secs_f64(10.0)))
+            .await
+            .unwrap();
+        mpv_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn seek_relative_supports_negative_delta() {
+        let (client_side, mpv_side) = tokio::io::duplex(1024);
+        let client = MpvClient::new(client_side);
+        let mpv_task = scripted_mpv(
+            mpv_side,
+            json!(["seek", -10.0, "relative"]),
+            json!(null),
+        );
+        client
+            .seek(Seek::Relative(SignedDuration::from_secs_f64(-10.0)))
+            .await
+            .unwrap();
         mpv_task.await.unwrap();
     }
 }
