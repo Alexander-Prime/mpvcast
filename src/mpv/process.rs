@@ -50,6 +50,7 @@ impl MpvProcess {
 
         let stream = Self::connect_with_retry(&socket_path, Duration::from_secs(5)).await?;
         let client = Arc::new(MpvClient::new(stream));
+        client.observe_status_properties().await?;
 
         Ok(Self {
             _child: child,

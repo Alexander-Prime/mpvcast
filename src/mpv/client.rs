@@ -4,9 +4,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::sync::{Mutex, broadcast, oneshot};
+use tokio::sync::{Mutex, oneshot, watch};
 
-use crate::mpv::protocol::{Command, Event, Message, Reply};
+use crate::mpv::protocol::{Command, Message, Reply};
+use crate::mpv::snapshot::StatusSnapshot;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MpvError {
@@ -52,7 +53,7 @@ pub struct MpvClient {
     writer: Mutex<Box<dyn AsyncWrite + Send + Unpin>>,
     next_request_id: AtomicU64,
     pending: Pending,
-    event_tx: broadcast::Sender<Event>,
+    status_tx: Arc<watch::Sender<StatusSnapshot>>,
 }
 
 impl MpvClient {
@@ -62,18 +63,48 @@ impl MpvClient {
     {
         let (reader, writer) = tokio::io::split(stream);
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
-        let (event_tx, _) = broadcast::channel(128);
-        tokio::spawn(reader_loop(reader, Arc::clone(&pending), event_tx.clone()));
+        let (status_tx, _) = watch::channel(StatusSnapshot::default());
+        let status_tx = Arc::new(status_tx);
+        tokio::spawn(reader_loop(
+            reader,
+            Arc::clone(&pending),
+            Arc::clone(&status_tx),
+        ));
         Self {
             writer: Mutex::new(Box::new(writer)),
             next_request_id: AtomicU64::new(1),
             pending,
-            event_tx,
+            status_tx,
         }
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<Event> {
-        self.event_tx.subscribe()
+    /// Watch the status for changes. The receiver carries the current snapshot,
+    /// so a subscriber can read the state straight away rather than waiting for
+    /// the next change.
+    pub fn subscribe(&self) -> watch::Receiver<StatusSnapshot> {
+        self.status_tx.subscribe()
+    }
+
+    pub fn status_snapshot(&self) -> StatusSnapshot {
+        self.status_tx.borrow().clone()
+    }
+
+    pub async fn observe_status_properties(&self) -> Result<()> {
+        const PROPS: &[(&str, u64)] = &[
+            ("pause", 1),
+            ("time-pos", 2),
+            ("duration", 3),
+            ("volume", 4),
+            ("mute", 5),
+            ("playlist", 6),
+            ("playlist-pos", 7),
+            ("media-title", 8),
+        ];
+        for (name, id) in PROPS {
+            self.send(vec![json!("observe_property"), json!(id), json!(name)])
+                .await?;
+        }
+        Ok(())
     }
 
     pub async fn get_property(&self, name: &str) -> Result<Value> {
@@ -157,7 +188,7 @@ impl MpvClient {
 async fn reader_loop<R: AsyncRead + Unpin>(
     reader: R,
     pending: Pending,
-    event_tx: broadcast::Sender<Event>,
+    status_tx: Arc<watch::Sender<StatusSnapshot>>,
 ) {
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
@@ -179,7 +210,7 @@ async fn reader_loop<R: AsyncRead + Unpin>(
                 }
             }
             Ok(Message::Event(event)) => {
-                let _ = event_tx.send(event);
+                status_tx.send_if_modified(|snapshot| snapshot.apply_event(&event));
             }
             Err(_) => {
                 // Malformed line; skip.
@@ -277,28 +308,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscriber_receives_events() {
-        let (client_side, mpv_side) = tokio::io::duplex(1024);
-        let client = MpvClient::new(client_side);
-        let mut rx = client.subscribe();
-
-        let mpv_task = tokio::spawn(async move {
-            let (_read_half, mut write_half) = tokio::io::split(mpv_side);
-            let event = format!("{}\n", json!({"event": "end-file", "reason": "eof"}));
-            write_half.write_all(event.as_bytes()).await.unwrap();
-        });
-
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-            .await
-            .expect("timed out waiting for event")
-            .unwrap();
-        assert_eq!(event.event, "end-file");
-        assert_eq!(event.extra.get("reason"), Some(&json!("eof")));
-        mpv_task.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn multiple_subscribers_each_receive_events() {
+    async fn multiple_subscribers_each_observe_changes() {
         let (client_side, mpv_side) = tokio::io::duplex(1024);
         let client = MpvClient::new(client_side);
         let mut rx1 = client.subscribe();
@@ -306,20 +316,21 @@ mod tests {
 
         let mpv_task = tokio::spawn(async move {
             let (_read_half, mut write_half) = tokio::io::split(mpv_side);
-            let event = format!("{}\n", json!({"event": "idle"}));
-            write_half.write_all(event.as_bytes()).await.unwrap();
+            let event =
+                json!({"event": "property-change", "id": 4, "name": "volume", "data": 55.0});
+            write_half
+                .write_all(format!("{}\n", event).as_bytes())
+                .await
+                .unwrap();
         });
 
-        let e1 = tokio::time::timeout(std::time::Duration::from_secs(1), rx1.recv())
-            .await
-            .expect("timed out waiting for event on rx1")
-            .unwrap();
-        let e2 = tokio::time::timeout(std::time::Duration::from_secs(1), rx2.recv())
-            .await
-            .expect("timed out waiting for event on rx2")
-            .unwrap();
-        assert_eq!(e1.event, "idle");
-        assert_eq!(e2.event, "idle");
+        for (name, rx) in [("rx1", &mut rx1), ("rx2", &mut rx2)] {
+            tokio::time::timeout(std::time::Duration::from_secs(1), rx.changed())
+                .await
+                .unwrap_or_else(|_| panic!("timed out waiting for change on {name}"))
+                .unwrap();
+            assert_eq!(rx.borrow().volume, Some(55.0), "{name} saw the wrong value");
+        }
         mpv_task.await.unwrap();
     }
 
@@ -487,5 +498,231 @@ mod tests {
             .await
             .unwrap();
         mpv_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn snapshot_reflects_property_change_events() {
+        let (client_side, mpv_side) = tokio::io::duplex(1024);
+        let client = MpvClient::new(client_side);
+        let mut status = client.subscribe();
+
+        tokio::spawn(async move {
+            let (_read_half, mut write_half) = tokio::io::split(mpv_side);
+            let event =
+                json!({"event": "property-change", "id": 1, "name": "pause", "data": true});
+            write_half
+                .write_all(format!("{}\n", event).as_bytes())
+                .await
+                .unwrap();
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), status.changed())
+            .await
+            .expect("timed out waiting for status change")
+            .unwrap();
+        assert_eq!(status.borrow().pause, Some(true));
+        assert_eq!(client.status_snapshot().pause, Some(true));
+    }
+
+    #[tokio::test]
+    async fn unchanged_state_does_not_notify_subscribers() {
+        let (client_side, mpv_side) = tokio::io::duplex(1024);
+        let client = MpvClient::new(client_side);
+        let mut status = client.subscribe();
+        let (release_duplicate, duplicate_released) = oneshot::channel();
+
+        let mpv_task = tokio::spawn(async move {
+            let (read_half, mut write_half) = tokio::io::split(mpv_side);
+            let mut reader = BufReader::new(read_half);
+            let pause =
+                json!({"event": "property-change", "id": 1, "name": "pause", "data": true});
+            write_half
+                .write_all(format!("{}\n", pause).as_bytes())
+                .await
+                .unwrap();
+            // Hold the duplicate back until the first change has been observed.
+            // Sent together, the channel would coalesce both into one wakeup and
+            // the duplicate's notification would be invisible either way.
+            duplicate_released.await.unwrap();
+            write_half
+                .write_all(format!("{}\n", pause).as_bytes())
+                .await
+                .unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let cmd: Value = serde_json::from_str(line.trim()).unwrap();
+            let id = cmd["request_id"].as_u64().unwrap();
+            write_half
+                .write_all(
+                    format!("{}\n", json!({"error": "success", "request_id": id})).as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), status.changed())
+            .await
+            .expect("timed out waiting for the first change")
+            .unwrap();
+        assert_eq!(status.borrow().pause, Some(true));
+        release_duplicate.send(()).unwrap();
+
+        // The reader handles the socket in order, so a reply to a command sent
+        // after the duplicate proves the duplicate has already been processed —
+        // without this the assertion below would pass vacuously.
+        client.get_property("pause").await.unwrap();
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), status.changed())
+                .await
+                .is_err(),
+            "a property-change that altered nothing must not wake subscribers"
+        );
+        mpv_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn snapshot_records_end_file_errors() {
+        let (client_side, mpv_side) = tokio::io::duplex(1024);
+        let client = MpvClient::new(client_side);
+        let mut status = client.subscribe();
+
+        tokio::spawn(async move {
+            let (_read_half, mut write_half) = tokio::io::split(mpv_side);
+            let event = json!({
+                "event": "end-file",
+                "reason": "error",
+                "file_error": "connection refused"
+            });
+            write_half
+                .write_all(format!("{}\n", event).as_bytes())
+                .await
+                .unwrap();
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), status.changed())
+            .await
+            .expect("timed out waiting for status change")
+            .unwrap();
+
+        let snapshot = client.status_snapshot();
+        assert_eq!(snapshot.errors.len(), 1);
+        assert!(
+            snapshot.errors[0].message.contains("connection refused"),
+            "expected message to contain 'connection refused', got {:?}",
+            snapshot.errors[0].message
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_clears_errors_on_start_file() {
+        let (client_side, mpv_side) = tokio::io::duplex(1024);
+        let client = MpvClient::new(client_side);
+        let mut status = client.subscribe();
+        let (release_start_file, start_file_released) = oneshot::channel();
+
+        tokio::spawn(async move {
+            let (_read_half, mut write_half) = tokio::io::split(mpv_side);
+            let err_event = json!({
+                "event": "end-file",
+                "reason": "error",
+                "file_error": "playback failed"
+            });
+            write_half
+                .write_all(format!("{}\n", err_event).as_bytes())
+                .await
+                .unwrap();
+            // Hold start-file back until the error has been observed, so the
+            // clearing is proven to act on a non-empty error list.
+            start_file_released.await.unwrap();
+            let start_event = json!({"event": "start-file"});
+            write_half
+                .write_all(format!("{}\n", start_event).as_bytes())
+                .await
+                .unwrap();
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), status.changed())
+            .await
+            .expect("timed out waiting for end-file")
+            .unwrap();
+        assert_eq!(
+            client.status_snapshot().errors.len(),
+            1,
+            "error must be recorded before start-file can be shown to clear it"
+        );
+
+        release_start_file.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), status.changed())
+            .await
+            .expect("timed out waiting for start-file")
+            .unwrap();
+
+        let snapshot = client.status_snapshot();
+        assert!(
+            snapshot.errors.is_empty(),
+            "expected errors cleared, got {:?}",
+            snapshot.errors
+        );
+    }
+
+    #[tokio::test]
+    async fn observe_status_properties_sends_all_observers() {
+        let (client_side, mpv_side) = tokio::io::duplex(1024);
+        let client = MpvClient::new(client_side);
+
+        let mpv_task = tokio::spawn(async move {
+            let (read_half, mut write_half) = tokio::io::split(mpv_side);
+            let mut reader = BufReader::new(read_half);
+            let mut names = Vec::new();
+            for _ in 0..8 {
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let cmd: Value = serde_json::from_str(line.trim()).unwrap();
+                let id = cmd["request_id"].as_u64().unwrap();
+                let name = cmd["command"][2].as_str().unwrap().to_string();
+                names.push(name);
+                let reply = format!(
+                    "{}\n",
+                    json!({"error": "success", "request_id": id})
+                );
+                write_half.write_all(reply.as_bytes()).await.unwrap();
+            }
+            names
+        });
+
+        // Both awaits are bounded: if the observed set ever shrinks, the fake
+        // mpv blocks on a command that never arrives, and if it grows, the
+        // client blocks on a reply that never comes. Either would hang here
+        // rather than fail without the timeouts.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            client.observe_status_properties(),
+        )
+        .await
+        .expect("timed out sending observe_property commands")
+        .unwrap();
+        let names = tokio::time::timeout(std::time::Duration::from_secs(1), mpv_task)
+            .await
+            .expect("timed out waiting for observe_property commands")
+            .unwrap();
+
+        for expected in [
+            "pause",
+            "time-pos",
+            "duration",
+            "volume",
+            "mute",
+            "playlist",
+            "playlist-pos",
+            "media-title",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "missing {} in {:?}",
+                expected,
+                names
+            );
+        }
     }
 }
