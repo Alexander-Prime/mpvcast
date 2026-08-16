@@ -71,33 +71,38 @@ State surface:
 
 ```
 GET    /status      current playback state (schema below)
-PATCH  /status      update any subset of `position` (seconds, absolute seek), `volume` (0-100), and `muted` (bool)
+PATCH  /status      update either or both of `volume` (0-100) and `muted` (bool)
 ```
 
 `GET /status` response:
 
 ```json
 {
-  "state": "idle" | "paused" | "playing",
-  "current": { "url": string, "title": string | null } | null,
-  "current_index": integer | null,
-  "position": float | null,
-  "duration": float | null,
+  "playback": {
+    "paused": boolean,
+    "current": { "url": string, "title": string | null },
+    "current_index": integer,
+    "position": float | null,
+    "duration": float | null
+  } | null,
   "volume": integer,
   "muted": boolean,
   "errors": [{ "message": string }]
 }
 ```
 
-- `state`: `idle` when nothing is loaded, `paused` when a track is loaded
-  but stopped, `playing` otherwise.
-- `current`: the loaded item; `null` when idle. `title` inside it is
-  sourced from media metadata and is `null` until it resolves.
-- `current_index`: position of the current item in the queue; `null` when
-  idle. Disambiguates which entry is playing when the queue contains
-  duplicate URLs.
-- `position`, `duration`: seconds. Both `null` when idle; `duration` is
-  also `null` for streams with unknown length.
+- `playback`: everything that only means something while an item is
+  loaded, grouped so it is absent as a unit. `null` when mpv is idle, so
+  a client has no stale position to read rather than a set of nulls to
+  remember to check.
+- `paused`: whether the loaded item is stopped.
+- `current`: the loaded item. `title` is sourced from media metadata and
+  is `null` until it resolves.
+- `current_index`: position of the current item in the queue.
+  Disambiguates which entry is playing when the queue contains duplicate
+  URLs.
+- `position`, `duration`: seconds. Each is `null` until mpv resolves it,
+  and `duration` stays `null` for streams with unknown length.
 - `volume`: integer 0–100, clamped at the API boundary (mpv's internal
   range can exceed 100).
 - `muted`: whether audio output is silenced. Independent of `volume` —
@@ -105,7 +110,9 @@ PATCH  /status      update any subset of `position` (seconds, absolute seek), `v
 - `errors`: playback errors reported by mpv (unresolvable URL, decoder
   failure, etc.). Cleared when a new item begins playing.
 
-`PATCH /status` with `position` while `state` is `idle` is a no-op.
+`PATCH /status` carries the two settings that mean something whether or
+not an item is loaded. Everything nested under `playback` is changed
+through the transport routes below instead.
 
 Queue resource (mpv playlist):
 
@@ -138,8 +145,21 @@ POST   /playback/play       set pause=false; if idle and queue non-empty, start 
 POST   /playback/pause      set pause=true
 POST   /playback/next       playlist-next
 POST   /playback/previous   playlist-prev
-POST   /playback/seek       seek by delta seconds (body: {"delta": float}); positive = forward, negative = back
 ```
+
+Playback position:
+
+```
+PUT    /playback/position   seek to an absolute position (body: {"seconds": float})
+PATCH  /playback/position   seek by a delta (body: {"delta": float}); positive = forward, negative = back
+```
+
+The delta form maps onto mpv's relative seek, so a skip button never has
+to compute a target from a position that moves underneath it. The
+absolute form is what a scrubber drag lands on.
+
+Both respond `409` when `playback` is `null`, since there is nothing to
+seek within.
 
 Real-time updates:
 

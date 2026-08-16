@@ -2,10 +2,11 @@ use axum::{
     Router,
     extract::State,
     http::StatusCode,
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use std::sync::Arc;
 
+mod api;
 mod mpv;
 
 use crate::mpv::client::MpvClient;
@@ -42,7 +43,10 @@ fn router(state: AppState) -> Router {
         .route("/playback/pause", post(not_implemented))
         .route("/playback/next", post(not_implemented))
         .route("/playback/previous", post(not_implemented))
-        .route("/playback/seek", post(not_implemented))
+        .route(
+            "/playback/position",
+            put(not_implemented).patch(not_implemented),
+        )
         .route("/events", get(not_implemented))
         .with_state(state)
 }
