@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cargo fmt 2>/dev/null || true",
+            "statusMessage": "Formatting Rust sources"
+          }
+        ]
+      }
+    ]
+  }
+}

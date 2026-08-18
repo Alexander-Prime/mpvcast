@@ -88,10 +88,8 @@ impl StatusSnapshot {
                         .iter()
                         .filter_map(|entry| {
                             let url = entry.get("filename")?.as_str()?.to_string();
-                            let title = entry
-                                .get("title")
-                                .and_then(Value::as_str)
-                                .map(String::from);
+                            let title =
+                                entry.get("title").and_then(Value::as_str).map(String::from);
                             Some(PlaylistEntry { url, title })
                         })
                         .collect();
@@ -173,12 +171,11 @@ mod tests {
         }
 
         assert_eq!(snapshot.errors.len(), MAX_ERRORS);
-        let messages: Vec<&str> = snapshot
-            .errors
-            .iter()
-            .map(|e| e.message.as_str())
-            .collect();
-        assert_eq!(messages[0], "error 2", "oldest two should have been dropped");
+        let messages: Vec<&str> = snapshot.errors.iter().map(|e| e.message.as_str()).collect();
+        assert_eq!(
+            messages[0], "error 2",
+            "oldest two should have been dropped"
+        );
         assert_eq!(messages[MAX_ERRORS - 1], "error 9");
     }
 }

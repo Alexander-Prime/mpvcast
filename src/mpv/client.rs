@@ -378,11 +378,7 @@ mod tests {
     async fn get_property_sends_expected_command() {
         let (client_side, mpv_side) = tokio::io::duplex(1024);
         let client = MpvClient::new(client_side);
-        let mpv_task = scripted_mpv(
-            mpv_side,
-            json!(["get_property", "pause"]),
-            json!(true),
-        );
+        let mpv_task = scripted_mpv(mpv_side, json!(["get_property", "pause"]), json!(true));
         assert_eq!(client.get_property("pause").await.unwrap(), json!(true));
         mpv_task.await.unwrap();
     }
@@ -409,10 +405,7 @@ mod tests {
             json!(["loadfile", "https://example.com/video", "append"]),
             json!(null),
         );
-        client
-            .loadfile("https://example.com/video")
-            .await
-            .unwrap();
+        client.loadfile("https://example.com/video").await.unwrap();
         mpv_task.await.unwrap();
     }
 
@@ -456,11 +449,7 @@ mod tests {
     async fn seek_absolute_sends_absolute_flag() {
         let (client_side, mpv_side) = tokio::io::duplex(1024);
         let client = MpvClient::new(client_side);
-        let mpv_task = scripted_mpv(
-            mpv_side,
-            json!(["seek", 30.5, "absolute"]),
-            json!(null),
-        );
+        let mpv_task = scripted_mpv(mpv_side, json!(["seek", 30.5, "absolute"]), json!(null));
         client
             .seek(Seek::Absolute(std::time::Duration::from_secs_f64(30.5)))
             .await
@@ -472,11 +461,7 @@ mod tests {
     async fn seek_relative_sends_relative_flag() {
         let (client_side, mpv_side) = tokio::io::duplex(1024);
         let client = MpvClient::new(client_side);
-        let mpv_task = scripted_mpv(
-            mpv_side,
-            json!(["seek", 10.0, "relative"]),
-            json!(null),
-        );
+        let mpv_task = scripted_mpv(mpv_side, json!(["seek", 10.0, "relative"]), json!(null));
         client
             .seek(Seek::Relative(SignedDuration::from_secs_f64(10.0)))
             .await
@@ -488,11 +473,7 @@ mod tests {
     async fn seek_relative_supports_negative_delta() {
         let (client_side, mpv_side) = tokio::io::duplex(1024);
         let client = MpvClient::new(client_side);
-        let mpv_task = scripted_mpv(
-            mpv_side,
-            json!(["seek", -10.0, "relative"]),
-            json!(null),
-        );
+        let mpv_task = scripted_mpv(mpv_side, json!(["seek", -10.0, "relative"]), json!(null));
         client
             .seek(Seek::Relative(SignedDuration::from_secs_f64(-10.0)))
             .await
@@ -508,8 +489,7 @@ mod tests {
 
         tokio::spawn(async move {
             let (_read_half, mut write_half) = tokio::io::split(mpv_side);
-            let event =
-                json!({"event": "property-change", "id": 1, "name": "pause", "data": true});
+            let event = json!({"event": "property-change", "id": 1, "name": "pause", "data": true});
             write_half
                 .write_all(format!("{}\n", event).as_bytes())
                 .await
@@ -534,8 +514,7 @@ mod tests {
         let mpv_task = tokio::spawn(async move {
             let (read_half, mut write_half) = tokio::io::split(mpv_side);
             let mut reader = BufReader::new(read_half);
-            let pause =
-                json!({"event": "property-change", "id": 1, "name": "pause", "data": true});
+            let pause = json!({"event": "property-change", "id": 1, "name": "pause", "data": true});
             write_half
                 .write_all(format!("{}\n", pause).as_bytes())
                 .await
@@ -682,10 +661,7 @@ mod tests {
                 let id = cmd["request_id"].as_u64().unwrap();
                 let name = cmd["command"][2].as_str().unwrap().to_string();
                 names.push(name);
-                let reply = format!(
-                    "{}\n",
-                    json!({"error": "success", "request_id": id})
-                );
+                let reply = format!("{}\n", json!({"error": "success", "request_id": id}));
                 write_half.write_all(reply.as_bytes()).await.unwrap();
             }
             names

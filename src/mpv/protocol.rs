@@ -57,8 +57,7 @@ mod tests {
 
     #[test]
     fn reply_success_without_data() {
-        let reply: Reply =
-            serde_json::from_str(r#"{"error":"success","request_id":7}"#).unwrap();
+        let reply: Reply = serde_json::from_str(r#"{"error":"success","request_id":7}"#).unwrap();
         assert_eq!(reply.request_id, 7);
         assert_eq!(reply.error, "success");
         assert_eq!(reply.data, None);
@@ -74,8 +73,7 @@ mod tests {
 
     #[test]
     fn event_with_extras() {
-        let event: Event =
-            serde_json::from_str(r#"{"event":"end-file","reason":"eof"}"#).unwrap();
+        let event: Event = serde_json::from_str(r#"{"event":"end-file","reason":"eof"}"#).unwrap();
         assert_eq!(event.event, "end-file");
         assert_eq!(event.extra.get("reason"), Some(&json!("eof")));
     }
@@ -102,8 +100,7 @@ mod tests {
 
     #[test]
     fn message_demuxes_event() {
-        let msg: Message =
-            serde_json::from_str(r#"{"event":"playback-restart"}"#).unwrap();
+        let msg: Message = serde_json::from_str(r#"{"event":"playback-restart"}"#).unwrap();
         match msg {
             Message::Event(e) => assert_eq!(e.event, "playback-restart"),
             Message::Reply(_) => panic!("expected Event, got Reply"),
