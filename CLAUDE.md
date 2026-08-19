@@ -93,10 +93,8 @@ PATCH  /status      update either or both of `volume` (0-100) and `muted` (bool)
 }
 ```
 
-- `playback`: everything that only means something while an item is
-  loaded, grouped so it is absent as a unit. `null` when mpv is idle, so
-  a client has no stale position to read rather than a set of nulls to
-  remember to check.
+- `playback`: the fields that need a loaded item. `null` when mpv is
+  idle.
 - `paused`: whether the loaded item is stopped.
 - `current`: the loaded item. `title` is sourced from media metadata and
   is `null` until it resolves.
