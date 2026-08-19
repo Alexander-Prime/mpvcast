@@ -18,6 +18,9 @@ cargo check
 
 ## Core Architecture
 
+The reasoning behind these choices, and the alternatives that were
+rejected, is recorded in `docs/architecture/`.
+
 ### mpv Integration
 
 mpvcast spawns the system `mpv` binary as a long-lived child process and
@@ -50,15 +53,13 @@ A hand-rolled tokio client (`src/mpv/`) talks to mpv over the Unix socket:
   (`get_property`, `set_property`, `observe_property`, `loadfile`,
   playlist manipulation, `seek`, etc.) on top of a generic `send`.
 
-### State Ownership
+### Status Snapshot
 
-mpv's internal playlist is the source of truth for what's queued and what's
-playing. `MpvClient` observes the properties that back the API surface
-(`pause`, `time-pos`, `duration`, `volume`, `mute`, `playlist`,
-`playlist-pos`, `media-title`) and maintains a cached snapshot updated by
-mpv `property-change` events. `GET /status`, `GET /queue`, and the SSE
-`/events` stream all read from that snapshot rather than issuing fresh
-`get_property` calls per request. `AppState` is `Arc<MpvClient>`.
+`MpvClient` observes the properties that back the API surface (`pause`,
+`time-pos`, `duration`, `volume`, `mute`, `playlist`, `playlist-pos`,
+`media-title`) and maintains a cached snapshot updated by mpv
+`property-change` events. `GET /status`, `GET /queue`, and the SSE `/events`
+stream all read from that snapshot. `AppState` is `Arc<MpvClient>`.
 
 ### Server Design
 
@@ -104,8 +105,6 @@ PATCH  /status      update either or both of `volume` (0-100) and `muted` (bool)
 - `current`: the loaded item. `title` is sourced from media metadata and
   is `null` until it resolves.
 - `current_index`: position of the current item in the queue.
-  Disambiguates which entry is playing when the queue contains duplicate
-  URLs.
 - `position`, `duration`: seconds. Each is `null` until mpv resolves it,
   and `duration` stays `null` for streams with unknown length.
 - `volume`: integer 0–100, clamped at the API boundary (mpv's internal
@@ -171,8 +170,7 @@ Both respond `409` when `playback` is `null`, since there is nothing to
 seek within.
 
 Endpoints that only act return `204 No Content`. When mpv refuses a
-command or stops answering, the response is `502 Bad Gateway` — the
-request was well formed and the failure is upstream of the client.
+command or stops answering, the response is `502 Bad Gateway`.
 
 Real-time updates:
 
