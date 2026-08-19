@@ -118,8 +118,8 @@ Queue resource (mpv playlist):
 
 ```
 GET    /queue       list items
-PUT    /queue       replace: stop + playlist-clear + loadfile each append
-POST   /queue       append: loadfile each append
+PUT    /queue       replace: stop + playlist-clear + loadfile each
+POST   /queue       append: loadfile
 DELETE /queue       clear: stop + playlist-clear
 ```
 
@@ -137,6 +137,10 @@ entry has been loaded by mpv.
 
 `PUT /queue` accepts an array of `{ "url": string }`. `POST /queue`
 accepts a single `{ "url": string }`. The client never supplies `title`.
+
+`loadfile` carries mpv's `append-play` flag, so adding a URL starts an
+idle player and leaves an item that's already playing alone. Sharing a
+link from a phone is therefore one request rather than two.
 
 Transport actions:
 
@@ -160,6 +164,10 @@ absolute form is what a scrubber drag lands on.
 
 Both respond `409` when `playback` is `null`, since there is nothing to
 seek within.
+
+Endpoints that only act return `204 No Content`. When mpv refuses a
+command or stops answering, the response is `502 Bad Gateway` — the
+request was well formed and the failure is upstream of the client.
 
 Real-time updates:
 

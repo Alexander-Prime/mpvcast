@@ -118,7 +118,7 @@ impl MpvClient {
     }
 
     pub async fn loadfile(&self, url: &str) -> Result<()> {
-        self.send(vec![json!("loadfile"), json!(url), json!("append")])
+        self.send(vec![json!("loadfile"), json!(url), json!("append-play")])
             .await?;
         Ok(())
     }
@@ -396,13 +396,15 @@ mod tests {
         mpv_task.await.unwrap();
     }
 
+    /// `append-play` rather than `append`: queueing a URL at an idle player
+    /// should start it, while leaving an already-playing item alone.
     #[tokio::test]
-    async fn loadfile_appends_by_default() {
+    async fn loadfile_appends_and_plays_when_idle() {
         let (client_side, mpv_side) = tokio::io::duplex(1024);
         let client = MpvClient::new(client_side);
         let mpv_task = scripted_mpv(
             mpv_side,
-            json!(["loadfile", "https://example.com/video", "append"]),
+            json!(["loadfile", "https://example.com/video", "append-play"]),
             json!(null),
         );
         client.loadfile("https://example.com/video").await.unwrap();
