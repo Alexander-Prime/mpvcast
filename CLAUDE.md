@@ -35,10 +35,6 @@ mpv --idle=yes --force-window=immediate
     --fullscreen --hwdec=auto-safe --ytdl=yes
 ```
 
-This produces a window that's up immediately on the TV, hardware-accelerated
-video, an idle mpv that survives between playback sessions, and yt-dlp URL
-resolution handled inside mpv.
-
 ### IPC Client
 
 A hand-rolled tokio client (`src/mpv/`) talks to mpv over the Unix socket:
@@ -46,9 +42,9 @@ A hand-rolled tokio client (`src/mpv/`) talks to mpv over the Unix socket:
 - Newline-delimited JSON in both directions.
 - Outgoing commands carry a `request_id`; replies are correlated back via a
   pending-request map and `tokio::sync::oneshot` channels.
-- Asynchronous mpv events (`end-file`, property changes, etc.) are routed to
-  a `tokio::sync::broadcast` channel so multiple subscribers can observe
-  them.
+- Asynchronous mpv events (`end-file`, property changes, etc.) are folded
+  into the status snapshot, which is published on a `tokio::sync::watch`
+  channel so multiple subscribers can observe changes.
 - The client exposes typed helpers for the commands mpvcast uses
   (`get_property`, `set_property`, `observe_property`, `loadfile`,
   playlist manipulation, `seek`, etc.) on top of a generic `send`.
