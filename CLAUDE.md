@@ -65,6 +65,11 @@ mpv `property-change` events. `GET /status`, `GET /queue`, and the SSE
 Axum HTTP server. Handlers are thin shims over `MpvClient` calls. Binds to
 `0.0.0.0` for LAN reachability from phones on the local network.
 
+The port defaults to 4590 and is overridden with `--port <number>`. The
+address it settled on is logged at startup. Any other argument is an
+error, so a mistyped flag can't leave the server listening somewhere
+unexpected.
+
 ## HTTP API
 
 State surface:

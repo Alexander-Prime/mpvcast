@@ -7,6 +7,7 @@ use axum::{
 };
 use serde::Deserialize;
 use std::sync::Arc;
+use tracing_subscriber::EnvFilter;
 
 mod api;
 mod mpv;
@@ -16,16 +17,48 @@ use crate::mpv::process::MpvProcess;
 
 type AppState = Arc<MpvClient>;
 
+/// Unassigned by IANA and not in common use, so it's unlikely to collide
+/// with anything already running on the machine.
+const DEFAULT_PORT: u16 = 4590;
+
+/// Reads `--port <number>` from the arguments, falling back to
+/// [`DEFAULT_PORT`]. Anything unrecognised is an error rather than being
+/// ignored, so a mistyped flag can't leave the server quietly listening
+/// somewhere other than where it was told to.
+fn parse_port(mut args: impl Iterator<Item = String>) -> Result<u16, String> {
+    let mut port = DEFAULT_PORT;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--port" => {
+                let value = args.next().ok_or("--port needs a port number")?;
+                port = value
+                    .parse()
+                    .map_err(|_| format!("not a port number: {value}"))?;
+            }
+            other => return Err(format!("unrecognised argument: {other}")),
+        }
+    }
+    Ok(port)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+    // Without this the filter falls back to errors only, which would hide
+    // the startup line below.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
+    let port = parse_port(std::env::args().skip(1))?;
 
     let mpv = MpvProcess::spawn().await?;
     let state = mpv.client();
 
     let app = router(state);
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
-    tracing::info!("Listening on http://0.0.0.0:8080");
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
+    tracing::info!("Listening on http://0.0.0.0:{port}");
     axum::serve(listener, app).await?;
 
     Ok(())
@@ -123,6 +156,42 @@ mod tests {
     use std::time::Duration;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     use tower::ServiceExt;
+
+    fn args<const N: usize>(list: [&str; N]) -> impl Iterator<Item = String> {
+        list.into_iter().map(String::from)
+    }
+
+    #[test]
+    fn no_arguments_uses_the_default_port() {
+        assert_eq!(parse_port(args([])).unwrap(), DEFAULT_PORT);
+    }
+
+    #[test]
+    fn the_port_flag_overrides_the_default() {
+        assert_eq!(parse_port(args(["--port", "9000"])).unwrap(), 9000);
+    }
+
+    #[test]
+    fn the_port_flag_needs_a_value() {
+        assert!(parse_port(args(["--port"])).is_err());
+    }
+
+    #[test]
+    fn a_port_that_is_not_a_number_is_rejected() {
+        assert!(parse_port(args(["--port", "http"])).is_err());
+    }
+
+    /// Out of u16 range, which is the case a bare integer parse would let
+    /// through if the type were wider.
+    #[test]
+    fn a_port_above_the_valid_range_is_rejected() {
+        assert!(parse_port(args(["--port", "70000"])).is_err());
+    }
+
+    #[test]
+    fn unrecognised_arguments_are_rejected() {
+        assert!(parse_port(args(["--verbose"])).is_err());
+    }
 
     /// A client whose mpv never says anything, so its snapshot stays empty.
     fn idle_client() -> AppState {
