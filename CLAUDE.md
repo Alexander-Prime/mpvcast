@@ -156,12 +156,7 @@ PUT    /playback/position   seek to an absolute position (body: {"seconds": floa
 PATCH  /playback/position   seek by a delta (body: {"delta": float}); positive = forward, negative = back
 ```
 
-The delta form maps onto mpv's relative seek, so a skip button never has
-to compute a target from a position that moves underneath it. The
-absolute form is what a scrubber drag lands on.
-
-Both respond `409` when `playback` is `null`, since there is nothing to
-seek within.
+Both respond `409` when `playback` is `null`.
 
 Endpoints that only act return `204 No Content`. When mpv refuses a
 command or stops answering, the response is `502 Bad Gateway`.
