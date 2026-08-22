@@ -60,6 +60,7 @@ impl MpvProcess {
             "--fullscreen",
             "--hwdec=auto-safe",
             "--ytdl=yes",
+            "--auto-window-resize=no",
         ])
         .await
     }
