@@ -20,6 +20,32 @@ pub enum MpvProcessError {
     Mpv(#[from] MpvError),
 }
 
+/// Asks the kernel to signal mpv when this process dies. `kill_on_drop`
+/// covers a tidy exit, but a process killed outright runs no destructors,
+/// which would leave a fullscreen player on screen with nothing driving it.
+///
+/// `PR_SET_PDEATHSIG` is armed against the spawning *thread* rather than the
+/// process. tokio's workers live as long as the runtime, so mpv outlives
+/// every thread that could plausibly spawn it here.
+fn bind_lifetime_to_parent(command: &mut Command) {
+    let parent = std::process::id() as libc::pid_t;
+    // SAFETY: the closure runs in the forked child before exec, so it may
+    // only call async-signal-safe functions. prctl, getppid and _exit are.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // The parent can die between the fork and the call above, which
+            // leaves the signal unarmed and mpv reparented to init.
+            if libc::getppid() != parent {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
+}
+
 pub struct MpvProcess {
     _child: Child,
     socket_path: PathBuf,
@@ -42,11 +68,13 @@ impl MpvProcess {
         let socket_path = PathBuf::from(format!("/tmp/mpvcast-{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&socket_path);
 
-        let child = Command::new("mpv")
+        let mut command = Command::new("mpv");
+        command
             .arg(format!("--input-ipc-server={}", socket_path.display()))
             .args(extra_args)
-            .kill_on_drop(true)
-            .spawn()?;
+            .kill_on_drop(true);
+        bind_lifetime_to_parent(&mut command);
+        let child = command.spawn()?;
 
         let stream = Self::connect_with_retry(&socket_path, Duration::from_secs(5)).await?;
         let client = Arc::new(MpvClient::new(stream));

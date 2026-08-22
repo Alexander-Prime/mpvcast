@@ -294,6 +294,7 @@ name = "mpvcast"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "libc",
  "serde",
  "serde_json",
  "thiserror",
