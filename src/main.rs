@@ -76,8 +76,8 @@ fn router(state: AppState) -> Router {
         )
         .route("/playback/play", post(play))
         .route("/playback/pause", post(pause))
-        .route("/playback/next", post(not_implemented))
-        .route("/playback/previous", post(not_implemented))
+        .route("/playback/next", post(next))
+        .route("/playback/previous", post(previous))
         .route(
             "/playback/position",
             put(set_position).patch(adjust_position),
@@ -122,6 +122,16 @@ async fn play(State(client): State<AppState>) -> Result<StatusCode, ApiError> {
 
 async fn pause(State(client): State<AppState>) -> Result<StatusCode, ApiError> {
     client.set_property("pause", true).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn next(State(client): State<AppState>) -> Result<StatusCode, ApiError> {
+    client.playlist_next().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn previous(State(client): State<AppState>) -> Result<StatusCode, ApiError> {
+    client.playlist_prev().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -490,6 +500,35 @@ mod tests {
             mpv.await.unwrap(),
             vec![json!(["set_property", "pause", false])]
         );
+    }
+
+    #[tokio::test]
+    async fn next_advances_the_playlist() {
+        let (client, mpv) = loaded_with_mpv(1).await;
+        let response = post_empty(client, "/playback/next").await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(mpv.await.unwrap(), vec![json!(["playlist-next"])]);
+    }
+
+    #[tokio::test]
+    async fn previous_steps_back_through_the_playlist() {
+        let (client, mpv) = loaded_with_mpv(1).await;
+        let response = post_empty(client, "/playback/previous").await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(mpv.await.unwrap(), vec![json!(["playlist-prev"])]);
+    }
+
+    /// Unlike seeking, these reach mpv whether or not anything is loaded,
+    /// and mpv refuses them if it cannot act.
+    #[tokio::test]
+    async fn next_reaches_mpv_with_nothing_loaded() {
+        let (client_socket, mpv_socket) = tokio::io::duplex(4096);
+        let client = Arc::new(MpvClient::new(client_socket));
+        let mpv = scripted_mpv(mpv_socket, Vec::new(), 1);
+
+        let response = post_empty(client, "/playback/next").await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(mpv.await.unwrap(), vec![json!(["playlist-next"])]);
     }
 
     #[tokio::test]
