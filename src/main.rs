@@ -12,7 +12,7 @@ use tracing_subscriber::EnvFilter;
 mod api;
 mod mpv;
 
-use crate::mpv::client::MpvClient;
+use crate::mpv::client::{MpvClient, MpvError, Seek, SignedDuration};
 use crate::mpv::process::MpvProcess;
 
 type AppState = Arc<MpvClient>;
@@ -80,7 +80,7 @@ fn router(state: AppState) -> Router {
         .route("/playback/previous", post(not_implemented))
         .route(
             "/playback/position",
-            put(not_implemented).patch(not_implemented),
+            put(set_position).patch(adjust_position),
         )
         .route("/events", get(not_implemented))
         .with_state(state)
@@ -104,12 +104,12 @@ struct QueueItem {
 async fn append_to_queue(
     State(client): State<AppState>,
     Json(item): Json<QueueItem>,
-) -> Result<StatusCode, MpvUnavailable> {
+) -> Result<StatusCode, ApiError> {
     client.loadfile(&item.url).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn play(State(client): State<AppState>) -> Result<StatusCode, MpvUnavailable> {
+async fn play(State(client): State<AppState>) -> Result<StatusCode, ApiError> {
     let snapshot = client.status_snapshot();
     // Stopping leaves mpv idle with the playlist intact, and clearing the
     // pause flag alone won't restart it — something has to be selected first.
@@ -120,25 +120,77 @@ async fn play(State(client): State<AppState>) -> Result<StatusCode, MpvUnavailab
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn pause(State(client): State<AppState>) -> Result<StatusCode, MpvUnavailable> {
+async fn pause(State(client): State<AppState>) -> Result<StatusCode, ApiError> {
     client.set_property("pause", true).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// mpv refused or never answered a command. The request itself was well
-/// formed, so this reports a failure upstream of the client.
-struct MpvUnavailable(mpv::client::MpvError);
+#[derive(Deserialize)]
+struct AbsolutePosition {
+    seconds: f64,
+}
 
-impl From<mpv::client::MpvError> for MpvUnavailable {
-    fn from(error: mpv::client::MpvError) -> Self {
-        Self(error)
+#[derive(Deserialize)]
+struct PositionDelta {
+    delta: f64,
+}
+
+async fn set_position(
+    State(client): State<AppState>,
+    Json(body): Json<AbsolutePosition>,
+) -> Result<StatusCode, ApiError> {
+    apply_seek(
+        &client,
+        Seek::Absolute(SignedDuration::from_secs_f64(body.seconds)),
+    )
+    .await
+}
+
+async fn adjust_position(
+    State(client): State<AppState>,
+    Json(body): Json<PositionDelta>,
+) -> Result<StatusCode, ApiError> {
+    apply_seek(
+        &client,
+        Seek::Relative(SignedDuration::from_secs_f64(body.delta)),
+    )
+    .await
+}
+
+async fn apply_seek(client: &AppState, seek: Seek) -> Result<StatusCode, ApiError> {
+    if api::Status::from(&client.status_snapshot())
+        .playback
+        .is_none()
+    {
+        return Err(ApiError::NothingLoaded);
+    }
+    client.seek(seek).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+enum ApiError {
+    /// The request needs a loaded item and there isn't one.
+    NothingLoaded,
+    /// mpv refused or never answered. The request itself was well formed,
+    /// so this reports a failure upstream of the client.
+    MpvUnavailable(MpvError),
+}
+
+impl From<MpvError> for ApiError {
+    fn from(error: MpvError) -> Self {
+        Self::MpvUnavailable(error)
     }
 }
 
-impl IntoResponse for MpvUnavailable {
+impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        tracing::error!("mpv command failed: {}", self.0);
-        StatusCode::BAD_GATEWAY.into_response()
+        match self {
+            Self::NothingLoaded => StatusCode::CONFLICT.into_response(),
+            Self::MpvUnavailable(error) => {
+                tracing::error!("mpv command failed: {error}");
+                StatusCode::BAD_GATEWAY.into_response()
+            }
+        }
     }
 }
 
@@ -271,11 +323,39 @@ mod tests {
         })
     }
 
-    async fn post_json(state: AppState, uri: &str, body: Value) -> Response {
+    /// A client mpv has told about one loaded item, paired with a fake mpv
+    /// ready to answer `commands` commands.
+    async fn loaded_with_mpv(commands: usize) -> (AppState, tokio::task::JoinHandle<Vec<Value>>) {
+        let (client_socket, mpv_socket) = tokio::io::duplex(4096);
+        let client = Arc::new(MpvClient::new(client_socket));
+        let mut status = client.subscribe();
+        let mpv = scripted_mpv(
+            mpv_socket,
+            vec![
+                json!({"event": "property-change", "id": 6, "name": "playlist", "data": [
+                    {"filename": "https://example.com/a"},
+                ]}),
+                json!({"event": "property-change", "id": 7, "name": "playlist-pos", "data": 0}),
+            ],
+            commands,
+        );
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            status.wait_for(|snapshot| snapshot.playlist_pos == Some(0)),
+        )
+        .await
+        .expect("timed out waiting for the loaded item")
+        .unwrap();
+
+        (client, mpv)
+    }
+
+    async fn send_json(state: AppState, method: &str, uri: &str, body: Value) -> Response {
         router(state)
             .oneshot(
                 Request::builder()
-                    .method("POST")
+                    .method(method)
                     .uri(uri)
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
@@ -370,7 +450,13 @@ mod tests {
         let client = Arc::new(MpvClient::new(client_socket));
         let mpv = scripted_mpv(mpv_socket, Vec::new(), 1);
 
-        let response = post_json(client, "/queue", json!({"url": "https://example.com/a"})).await;
+        let response = send_json(
+            client,
+            "POST",
+            "/queue",
+            json!({"url": "https://example.com/a"}),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert_eq!(
             mpv.await.unwrap(),
@@ -404,6 +490,74 @@ mod tests {
             mpv.await.unwrap(),
             vec![json!(["set_property", "pause", false])]
         );
+    }
+
+    #[tokio::test]
+    async fn putting_a_position_seeks_to_it() {
+        let (client, mpv) = loaded_with_mpv(1).await;
+        let response = send_json(
+            client,
+            "PUT",
+            "/playback/position",
+            json!({"seconds": 30.5}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(mpv.await.unwrap(), vec![json!(["seek", 30.5, "absolute"])]);
+    }
+
+    #[tokio::test]
+    async fn patching_a_position_seeks_by_the_delta() {
+        let (client, mpv) = loaded_with_mpv(1).await;
+        let response = send_json(
+            client,
+            "PATCH",
+            "/playback/position",
+            json!({"delta": -10.0}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(mpv.await.unwrap(), vec![json!(["seek", -10.0, "relative"])]);
+    }
+
+    /// The value goes through untouched, and a position past the end
+    /// finishes the item.
+    #[tokio::test]
+    async fn an_out_of_range_position_reaches_mpv_unchanged() {
+        let (client, mpv) = loaded_with_mpv(1).await;
+        let response = send_json(
+            client,
+            "PUT",
+            "/playback/position",
+            json!({"seconds": 99999.0}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            mpv.await.unwrap(),
+            vec![json!(["seek", 99999.0, "absolute"])]
+        );
+    }
+
+    #[tokio::test]
+    async fn seeking_with_nothing_loaded_is_a_conflict() {
+        let put = send_json(
+            idle_client(),
+            "PUT",
+            "/playback/position",
+            json!({"seconds": 5.0}),
+        )
+        .await;
+        assert_eq!(put.status(), StatusCode::CONFLICT);
+
+        let patch = send_json(
+            idle_client(),
+            "PATCH",
+            "/playback/position",
+            json!({"delta": 5.0}),
+        )
+        .await;
+        assert_eq!(patch.status(), StatusCode::CONFLICT);
     }
 
     /// After the queue has been stopped or cleared mpv sits idle with items

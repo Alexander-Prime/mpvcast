@@ -26,8 +26,9 @@ pub enum MpvError {
 
 pub type Result<T> = std::result::Result<T, MpvError>;
 
-/// A duration in seconds that may be negative. Used for relative seeks,
-/// where a positive value means forward and a negative value means back.
+/// A number of seconds that may be negative. For a relative seek the sign
+/// gives the direction; for an absolute one it counts back from the end of
+/// the file.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SignedDuration(f64);
 
@@ -43,7 +44,7 @@ impl SignedDuration {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Seek {
-    Absolute(std::time::Duration),
+    Absolute(SignedDuration),
     Relative(SignedDuration),
 }
 
@@ -453,7 +454,21 @@ mod tests {
         let client = MpvClient::new(client_side);
         let mpv_task = scripted_mpv(mpv_side, json!(["seek", 30.5, "absolute"]), json!(null));
         client
-            .seek(Seek::Absolute(std::time::Duration::from_secs_f64(30.5)))
+            .seek(Seek::Absolute(SignedDuration::from_secs_f64(30.5)))
+            .await
+            .unwrap();
+        mpv_task.await.unwrap();
+    }
+
+    /// mpv reads a negative absolute position as counting back from the end
+    /// of the file, so the sign has to survive the trip.
+    #[tokio::test]
+    async fn seek_absolute_passes_a_negative_target_through() {
+        let (client_side, mpv_side) = tokio::io::duplex(1024);
+        let client = MpvClient::new(client_side);
+        let mpv_task = scripted_mpv(mpv_side, json!(["seek", -5.0, "absolute"]), json!(null));
+        client
+            .seek(Seek::Absolute(SignedDuration::from_secs_f64(-5.0)))
             .await
             .unwrap();
         mpv_task.await.unwrap();
