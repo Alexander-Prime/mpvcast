@@ -1,8 +1,8 @@
 use axum::{
     Json, Router,
     extract::State,
-    http::StatusCode,
-    response::{IntoResponse, Response},
+    http::{StatusCode, header},
+    response::{Html, IntoResponse, Response},
     routing::{get, post, put},
 };
 use serde::Deserialize;
@@ -66,6 +66,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn router(state: AppState) -> Router {
     Router::new()
+        .route("/", get(index))
+        .route("/style.css", get(stylesheet))
+        .route("/app.js", get(script))
         .route("/status", get(get_status).patch(not_implemented))
         .route(
             "/queue",
@@ -84,6 +87,24 @@ fn router(state: AppState) -> Router {
         )
         .route("/events", get(not_implemented))
         .with_state(state)
+}
+
+async fn index() -> Html<&'static str> {
+    Html(include_str!("../assets/index.html"))
+}
+
+async fn stylesheet() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        include_str!("../assets/style.css"),
+    )
+}
+
+async fn script() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("../assets/app.js"),
+    )
 }
 
 async fn get_status(State(client): State<AppState>) -> Json<api::Status> {
@@ -500,6 +521,46 @@ mod tests {
             mpv.await.unwrap(),
             vec![json!(["set_property", "pause", false])]
         );
+    }
+
+    async fn text_body(response: Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_root_serves_the_client_page() {
+        let response = get(idle_client(), "/").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[axum::http::header::CONTENT_TYPE],
+            "text/html; charset=utf-8"
+        );
+        assert!(text_body(response).await.contains("<title>mpvcast</title>"));
+    }
+
+    #[tokio::test]
+    async fn the_stylesheet_is_served_as_css() {
+        let response = get(idle_client(), "/style.css").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[axum::http::header::CONTENT_TYPE],
+            "text/css; charset=utf-8"
+        );
+        assert!(text_body(response).await.contains("#scrubber"));
+    }
+
+    #[tokio::test]
+    async fn the_script_is_served_as_javascript() {
+        let response = get(idle_client(), "/app.js").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[axum::http::header::CONTENT_TYPE],
+            "text/javascript; charset=utf-8"
+        );
+        assert!(text_body(response).await.contains("function refresh"));
     }
 
     #[tokio::test]

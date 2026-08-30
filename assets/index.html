@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mpvcast</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <h1>mpvcast</h1>
+
+    <form id="add">
+      <input type="url" name="url" placeholder="Paste a link" required />
+      <button>Add</button>
+    </form>
+
+    <p id="title">Nothing playing</p>
+    <input id="scrubber" type="range" min="0" max="0" step="1" value="0" />
+    <p id="clock"></p>
+
+    <div id="transport">
+      <button data-post="/playback/previous">Previous</button>
+      <button data-post="/playback/position" data-delta="-10">Back 10s</button>
+      <button id="playpause">Play</button>
+      <button data-post="/playback/position" data-delta="10">Forward 10s</button>
+      <button data-post="/playback/next">Next</button>
+    </div>
+
+    <div id="errors"></div>
+
+    <h2>Queue</h2>
+    <ol id="queue"></ol>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

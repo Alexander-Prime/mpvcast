@@ -1,0 +1,85 @@
+const $ = (id) => document.getElementById(id);
+let scrubbing = false;
+let paused = true;
+
+const send = (method, path, body) =>
+  fetch(path, {
+    method,
+    headers: body ? { "content-type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+const clock = (seconds) => {
+  const whole = Math.floor(seconds);
+  const minutes = Math.floor(whole / 60);
+  return `${minutes}:${String(whole % 60).padStart(2, "0")}`;
+};
+
+$("add").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const field = event.target.url;
+  await send("POST", "/queue", { url: field.value });
+  field.value = "";
+  refresh();
+});
+
+$("playpause").addEventListener("click", async () => {
+  await send("POST", paused ? "/playback/play" : "/playback/pause");
+  refresh();
+});
+
+for (const button of document.querySelectorAll("[data-post]")) {
+  button.addEventListener("click", async () => {
+    const delta = button.dataset.delta;
+    await (delta
+      ? send("PATCH", button.dataset.post, { delta: Number(delta) })
+      : send("POST", button.dataset.post));
+    refresh();
+  });
+}
+
+$("scrubber").addEventListener("input", () => (scrubbing = true));
+$("scrubber").addEventListener("change", async () => {
+  scrubbing = false;
+  await send("PUT", "/playback/position", {
+    seconds: Number($("scrubber").value),
+  });
+  refresh();
+});
+
+async function refresh() {
+  const [status, queue] = await Promise.all([
+    fetch("/status").then((r) => r.json()),
+    fetch("/queue").then((r) => r.json()),
+  ]);
+
+  const playing = status.playback;
+  paused = !playing || playing.paused;
+  $("playpause").textContent = paused ? "Play" : "Pause";
+  $("title").textContent = playing
+    ? (playing.current.title ?? playing.current.url)
+    : "Nothing playing";
+
+  const position = playing?.position ?? 0;
+  const duration = playing?.duration ?? 0;
+  $("scrubber").max = duration;
+  $("scrubber").disabled = !duration;
+  if (!scrubbing) $("scrubber").value = position;
+  $("clock").textContent = duration
+    ? `${clock(position)} / ${clock(duration)}`
+    : "";
+
+  $("errors").textContent = status.errors.map((error) => error.message).join("\n");
+
+  $("queue").replaceChildren(
+    ...queue.map((track, index) => {
+      const item = document.createElement("li");
+      item.textContent = track.title ?? track.url;
+      if (index === playing?.current_index) item.className = "current";
+      return item;
+    }),
+  );
+}
+
+refresh();
+setInterval(refresh, 1000);

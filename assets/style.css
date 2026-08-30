@@ -1,0 +1,66 @@
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  font-family: system-ui, sans-serif;
+  margin: 0 auto;
+  max-width: 40rem;
+  padding: 1rem;
+}
+
+form {
+  display: flex;
+  gap: 0.5rem;
+}
+
+input[type="url"] {
+  flex: 1;
+  min-width: 0;
+}
+
+button,
+input {
+  font: inherit;
+  padding: 0.5rem;
+}
+
+#transport {
+  display: flex;
+  gap: 0.5rem;
+}
+
+#transport button {
+  flex: 1;
+}
+
+#scrubber {
+  width: 100%;
+  padding: 0;
+}
+
+#title {
+  font-weight: bold;
+  overflow-wrap: anywhere;
+}
+
+#clock {
+  font-variant-numeric: tabular-nums;
+}
+
+ol {
+  padding-left: 1.5rem;
+}
+
+li.current {
+  font-weight: bold;
+}
+
+#errors {
+  border-left: 3px solid currentColor;
+  padding-left: 0.5rem;
+}
+
+#errors:empty {
+  display: none;
+}
