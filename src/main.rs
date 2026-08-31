@@ -72,10 +72,7 @@ fn router(state: AppState) -> Router {
         .route("/status", get(get_status).patch(not_implemented))
         .route(
             "/queue",
-            get(get_queue)
-                .put(not_implemented)
-                .post(append_to_queue)
-                .delete(not_implemented),
+            get(get_queue).post(append_to_queue).delete(clear_queue),
         )
         .route("/playback/play", post(play))
         .route("/playback/pause", post(pause))
@@ -127,6 +124,11 @@ async fn append_to_queue(
     Json(item): Json<QueueItem>,
 ) -> Result<StatusCode, ApiError> {
     client.loadfile(&item.url).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn clear_queue(State(client): State<AppState>) -> Result<StatusCode, ApiError> {
+    client.stop().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -396,11 +398,11 @@ mod tests {
             .unwrap()
     }
 
-    async fn post_empty(state: AppState, uri: &str) -> Response {
+    async fn send_empty(state: AppState, method: &str, uri: &str) -> Response {
         router(state)
             .oneshot(
                 Request::builder()
-                    .method("POST")
+                    .method(method)
                     .uri(uri)
                     .body(Body::empty())
                     .unwrap(),
@@ -501,7 +503,7 @@ mod tests {
         let client = Arc::new(MpvClient::new(client_socket));
         let mpv = scripted_mpv(mpv_socket, Vec::new(), 1);
 
-        let response = post_empty(client, "/playback/pause").await;
+        let response = send_empty(client, "POST", "/playback/pause").await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert_eq!(
             mpv.await.unwrap(),
@@ -515,7 +517,7 @@ mod tests {
         let client = Arc::new(MpvClient::new(client_socket));
         let mpv = scripted_mpv(mpv_socket, Vec::new(), 1);
 
-        let response = post_empty(client, "/playback/play").await;
+        let response = send_empty(client, "POST", "/playback/play").await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert_eq!(
             mpv.await.unwrap(),
@@ -563,10 +565,20 @@ mod tests {
         assert!(text_body(response).await.contains("function refresh"));
     }
 
+    /// mpv's `stop` both ends playback and empties the playlist, where
+    /// `playlist-clear` would deliberately spare the current file.
+    #[tokio::test]
+    async fn deleting_the_queue_stops_playback_and_empties_it() {
+        let (client, mpv) = loaded_with_mpv(1).await;
+        let response = send_empty(client, "DELETE", "/queue").await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(mpv.await.unwrap(), vec![json!(["stop"])]);
+    }
+
     #[tokio::test]
     async fn next_advances_the_playlist() {
         let (client, mpv) = loaded_with_mpv(1).await;
-        let response = post_empty(client, "/playback/next").await;
+        let response = send_empty(client, "POST", "/playback/next").await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert_eq!(mpv.await.unwrap(), vec![json!(["playlist-next"])]);
     }
@@ -574,7 +586,7 @@ mod tests {
     #[tokio::test]
     async fn previous_steps_back_through_the_playlist() {
         let (client, mpv) = loaded_with_mpv(1).await;
-        let response = post_empty(client, "/playback/previous").await;
+        let response = send_empty(client, "POST", "/playback/previous").await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert_eq!(mpv.await.unwrap(), vec![json!(["playlist-prev"])]);
     }
@@ -587,7 +599,7 @@ mod tests {
         let client = Arc::new(MpvClient::new(client_socket));
         let mpv = scripted_mpv(mpv_socket, Vec::new(), 1);
 
-        let response = post_empty(client, "/playback/next").await;
+        let response = send_empty(client, "POST", "/playback/next").await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert_eq!(mpv.await.unwrap(), vec![json!(["playlist-next"])]);
     }
@@ -685,7 +697,7 @@ mod tests {
         .expect("timed out waiting for the playlist")
         .unwrap();
 
-        let response = post_empty(client, "/playback/play").await;
+        let response = send_empty(client, "POST", "/playback/play").await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert_eq!(
             mpv.await.unwrap(),

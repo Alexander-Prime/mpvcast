@@ -23,6 +23,11 @@ $("add").addEventListener("submit", async (event) => {
   refresh();
 });
 
+$("clear").addEventListener("click", async () => {
+  await send("DELETE", "/queue");
+  refresh();
+});
+
 $("playpause").addEventListener("click", async () => {
   await send("POST", paused ? "/playback/play" : "/playback/pause");
   refresh();
