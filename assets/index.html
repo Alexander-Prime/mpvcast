@@ -19,11 +19,27 @@
     <p id="clock"></p>
 
     <div id="transport">
-      <button data-post="/playback/previous">Previous</button>
-      <button data-post="/playback/position" data-delta="-10">Back 10s</button>
-      <button id="playpause">Play</button>
-      <button data-post="/playback/position" data-delta="10">Forward 10s</button>
-      <button data-post="/playback/next">Next</button>
+      <button data-post="/playback/previous" title="Previous" aria-label="Previous">
+        &#x23EE;      </button>
+      <button
+        data-post="/playback/position"
+        data-delta="-10"
+        title="Back 10s"
+        aria-label="Back 10 seconds"
+      >
+        &#x21B6;
+      </button>
+      <button id="playpause" title="Play" aria-label="Play">&#x23F5;</button>
+      <button
+        data-post="/playback/position"
+        data-delta="10"
+        title="Forward 10s"
+        aria-label="Forward 10 seconds"
+      >
+        &#x21B7;
+      </button>
+      <button data-post="/playback/next" title="Next" aria-label="Next">
+        &#x23ED;      </button>
     </div>
 
     <div id="errors"></div>

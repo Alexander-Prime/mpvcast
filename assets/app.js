@@ -60,7 +60,9 @@ async function refresh() {
 
   const playing = status.playback;
   paused = !playing || playing.paused;
-  $("playpause").textContent = paused ? "Play" : "Pause";
+  $("playpause").textContent = paused ? "⏵" : "⏸";
+  $("playpause").title = paused ? "Play" : "Pause";
+  $("playpause").ariaLabel = $("playpause").title;
   $("title").textContent = playing
     ? (playing.current.title ?? playing.current.url)
     : "Nothing playing";
