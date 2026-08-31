@@ -69,7 +69,7 @@ fn router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/style.css", get(stylesheet))
         .route("/app.js", get(script))
-        .route("/status", get(get_status).patch(not_implemented))
+        .route("/status", get(get_status).patch(patch_status))
         .route(
             "/queue",
             get(get_queue).post(append_to_queue).delete(clear_queue),
@@ -110,6 +110,28 @@ async fn get_status(State(client): State<AppState>) -> Json<api::Status> {
 
 async fn get_queue(State(client): State<AppState>) -> Json<Vec<api::Track>> {
     Json(api::queue(&client.status_snapshot()))
+}
+
+#[derive(Deserialize)]
+struct StatusPatch {
+    volume: Option<u8>,
+    muted: Option<bool>,
+}
+
+async fn patch_status(
+    State(client): State<AppState>,
+    Json(patch): Json<StatusPatch>,
+) -> Result<StatusCode, ApiError> {
+    if let Some(volume) = patch.volume {
+        if volume > 100 {
+            return Err(ApiError::VolumeOutOfRange);
+        }
+        client.set_property("volume", volume).await?;
+    }
+    if let Some(muted) = patch.muted {
+        client.set_property("mute", muted).await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
@@ -204,6 +226,8 @@ async fn apply_seek(client: &AppState, seek: Seek) -> Result<StatusCode, ApiErro
 enum ApiError {
     /// The request needs a loaded item and there isn't one.
     NothingLoaded,
+    /// A volume outside the 0 to 100 the API declares.
+    VolumeOutOfRange,
     /// mpv refused or never answered. The request itself was well formed,
     /// so this reports a failure upstream of the client.
     MpvUnavailable(MpvError),
@@ -219,6 +243,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         match self {
             Self::NothingLoaded => StatusCode::CONFLICT.into_response(),
+            Self::VolumeOutOfRange => StatusCode::BAD_REQUEST.into_response(),
             Self::MpvUnavailable(error) => {
                 tracing::error!("mpv command failed: {error}");
                 StatusCode::BAD_GATEWAY.into_response()
@@ -573,6 +598,58 @@ mod tests {
         let response = send_empty(client, "DELETE", "/queue").await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert_eq!(mpv.await.unwrap(), vec![json!(["stop"])]);
+    }
+
+    #[tokio::test]
+    async fn patching_the_volume_sets_it() {
+        let (client, mpv) = loaded_with_mpv(1).await;
+        let response = send_json(client, "PATCH", "/status", json!({"volume": 40})).await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            mpv.await.unwrap(),
+            vec![json!(["set_property", "volume", 40])]
+        );
+    }
+
+    #[tokio::test]
+    async fn patching_muted_sets_it() {
+        let (client, mpv) = loaded_with_mpv(1).await;
+        let response = send_json(client, "PATCH", "/status", json!({"muted": true})).await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            mpv.await.unwrap(),
+            vec![json!(["set_property", "mute", true])]
+        );
+    }
+
+    #[tokio::test]
+    async fn patching_both_sets_both() {
+        let (client, mpv) = loaded_with_mpv(2).await;
+        let response = send_json(
+            client,
+            "PATCH",
+            "/status",
+            json!({"volume": 0, "muted": false}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            mpv.await.unwrap(),
+            vec![
+                json!(["set_property", "volume", 0]),
+                json!(["set_property", "mute", false]),
+            ]
+        );
+    }
+
+    /// The API declares 0 to 100, so a value outside it is a malformed
+    /// request rather than something to quietly correct.
+    #[tokio::test]
+    async fn a_volume_above_the_range_is_rejected() {
+        let (client, mpv) = loaded_with_mpv(0).await;
+        let response = send_json(client, "PATCH", "/status", json!({"volume": 150})).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(mpv.await.unwrap(), Vec::<Value>::new());
     }
 
     #[tokio::test]

@@ -1,6 +1,8 @@
 const $ = (id) => document.getElementById(id);
 let scrubbing = false;
+let adjusting = false;
 let paused = true;
+let muted = false;
 
 const send = (method, path, body) =>
   fetch(path, {
@@ -43,6 +45,18 @@ for (const button of document.querySelectorAll("[data-post]")) {
   });
 }
 
+$("mute").addEventListener("click", async () => {
+  await send("PATCH", "/status", { muted: !muted });
+  refresh();
+});
+
+$("volume").addEventListener("input", () => (adjusting = true));
+$("volume").addEventListener("change", async () => {
+  adjusting = false;
+  await send("PATCH", "/status", { volume: Number($("volume").value) });
+  refresh();
+});
+
 $("scrubber").addEventListener("input", () => (scrubbing = true));
 $("scrubber").addEventListener("change", async () => {
   scrubbing = false;
@@ -75,6 +89,12 @@ async function refresh() {
   $("clock").textContent = duration
     ? `${clock(position)} / ${clock(duration)}`
     : "";
+
+  muted = status.muted;
+  $("mute").textContent = muted ? "Unmute" : "Mute";
+  $("mute").title = $("mute").textContent;
+  $("mute").ariaLabel = $("mute").textContent;
+  if (!adjusting) $("volume").value = status.volume;
 
   $("errors").textContent = status.errors.map((error) => error.message).join("\n");
 
