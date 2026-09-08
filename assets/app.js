@@ -22,17 +22,14 @@ $("add").addEventListener("submit", async (event) => {
   const field = event.target.url;
   await send("POST", "/queue", { url: field.value });
   field.value = "";
-  refresh();
 });
 
 $("clear").addEventListener("click", async () => {
   await send("DELETE", "/queue");
-  refresh();
 });
 
 $("playpause").addEventListener("click", async () => {
   await send("POST", paused ? "/playback/play" : "/playback/pause");
-  refresh();
 });
 
 for (const button of document.querySelectorAll("[data-post]")) {
@@ -41,20 +38,17 @@ for (const button of document.querySelectorAll("[data-post]")) {
     await (delta
       ? send("PATCH", button.dataset.post, { delta: Number(delta) })
       : send("POST", button.dataset.post));
-    refresh();
   });
 }
 
 $("mute").addEventListener("click", async () => {
   await send("PATCH", "/status", { muted: !muted });
-  refresh();
 });
 
 $("volume").addEventListener("input", () => (adjusting = true));
 $("volume").addEventListener("change", async () => {
   adjusting = false;
   await send("PATCH", "/status", { volume: Number($("volume").value) });
-  refresh();
 });
 
 $("scrubber").addEventListener("input", () => (scrubbing = true));
@@ -63,15 +57,9 @@ $("scrubber").addEventListener("change", async () => {
   await send("PUT", "/playback/position", {
     seconds: Number($("scrubber").value),
   });
-  refresh();
 });
 
-async function refresh() {
-  const [status, queue] = await Promise.all([
-    fetch("/status").then((r) => r.json()),
-    fetch("/queue").then((r) => r.json()),
-  ]);
-
+function render({ status, queue }) {
   const playing = status.playback;
   paused = !playing || playing.paused;
   $("playpause").textContent = paused ? "⏵" : "⏸";
@@ -108,5 +96,7 @@ async function refresh() {
   );
 }
 
-refresh();
-setInterval(refresh, 1000);
+// The stream opens with the current state and sends every change after it,
+// and EventSource reconnects on its own if the server goes away.
+new EventSource("/events").onmessage = (event) =>
+  render(JSON.parse(event.data));

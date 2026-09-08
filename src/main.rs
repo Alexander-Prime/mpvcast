@@ -2,10 +2,11 @@ use axum::{
     Json, Router,
     extract::State,
     http::{StatusCode, header},
-    response::{Html, IntoResponse, Response},
+    response::{Html, IntoResponse, Response, Sse, sse},
     routing::{get, post, put},
 };
-use serde::Deserialize;
+use futures_util::{Stream, stream};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
@@ -14,6 +15,7 @@ mod mpv;
 
 use crate::mpv::client::{MpvClient, MpvError, Seek, SignedDuration};
 use crate::mpv::process::MpvProcess;
+use crate::mpv::snapshot::StatusSnapshot;
 
 type AppState = Arc<MpvClient>;
 
@@ -82,7 +84,7 @@ fn router(state: AppState) -> Router {
             "/playback/position",
             put(set_position).patch(adjust_position),
         )
-        .route("/events", get(not_implemented))
+        .route("/events", get(events))
         .with_state(state)
 }
 
@@ -110,6 +112,41 @@ async fn get_status(State(client): State<AppState>) -> Json<api::Status> {
 
 async fn get_queue(State(client): State<AppState>) -> Json<Vec<api::Track>> {
     Json(api::queue(&client.status_snapshot()))
+}
+
+/// Everything the page renders from, so a change needs no follow-up request.
+#[derive(Serialize)]
+struct ClientState {
+    status: api::Status,
+    queue: Vec<api::Track>,
+}
+
+impl From<&StatusSnapshot> for ClientState {
+    fn from(snapshot: &StatusSnapshot) -> Self {
+        Self {
+            status: api::Status::from(snapshot),
+            queue: api::queue(snapshot),
+        }
+    }
+}
+
+async fn events(
+    State(client): State<AppState>,
+) -> Sse<impl Stream<Item = Result<sse::Event, axum::Error>>> {
+    let stream = stream::unfold(
+        (client.subscribe(), true),
+        |(mut receiver, opening)| async move {
+            // Emit what mpv last reported before waiting, so a client joining
+            // mid-playback is not left blank until the next change.
+            if !opening && receiver.changed().await.is_err() {
+                return None;
+            }
+            let state = ClientState::from(&*receiver.borrow_and_update());
+            Some((sse::Event::default().json_data(state), (receiver, false)))
+        },
+    );
+
+    Sse::new(stream).keep_alive(sse::KeepAlive::default())
 }
 
 #[derive(Deserialize)]
@@ -252,16 +289,13 @@ impl IntoResponse for ApiError {
     }
 }
 
-async fn not_implemented(State(_client): State<AppState>) -> StatusCode {
-    StatusCode::NOT_IMPLEMENTED
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
     use axum::response::Response;
+    use http_body_util::BodyExt;
     use serde_json::{Value, json};
     use std::time::Duration;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -587,7 +621,7 @@ mod tests {
             response.headers()[axum::http::header::CONTENT_TYPE],
             "text/javascript; charset=utf-8"
         );
-        assert!(text_body(response).await.contains("function refresh"));
+        assert!(text_body(response).await.contains("function render"));
     }
 
     /// mpv's `stop` both ends playback and empties the playlist, where
@@ -650,6 +684,35 @@ mod tests {
         let response = send_json(client, "PATCH", "/status", json!({"volume": 150})).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(mpv.await.unwrap(), Vec::<Value>::new());
+    }
+
+    #[tokio::test]
+    async fn the_events_stream_announces_itself_as_sse() {
+        let response = get(idle_client(), "/events").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[axum::http::header::CONTENT_TYPE],
+            "text/event-stream"
+        );
+    }
+
+    /// A client joining mid-playback needs the current state, not the next
+    /// change, so the stream opens with what mpv last reported.
+    #[tokio::test]
+    async fn the_events_stream_opens_with_the_current_state() {
+        let response = get(idle_client(), "/events").await;
+        let mut body = response.into_body();
+        let frame = tokio::time::timeout(Duration::from_secs(1), body.frame())
+            .await
+            .expect("timed out waiting for the first event")
+            .expect("the stream ended")
+            .unwrap();
+        let text = String::from_utf8(frame.into_data().unwrap().to_vec()).unwrap();
+        assert!(
+            text.contains(r#""playback":null"#),
+            "unexpected frame: {text}"
+        );
+        assert!(text.contains(r#""queue":[]"#), "unexpected frame: {text}");
     }
 
     #[tokio::test]
