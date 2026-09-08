@@ -60,6 +60,7 @@ impl MpvProcess {
             "--fullscreen",
             "--hwdec=auto-safe",
             "--ytdl=yes",
+            "--ytdl-format=bestvideo[height<=?1080]+bestaudio/best",
             "--auto-window-resize=no",
         ])
         .await
