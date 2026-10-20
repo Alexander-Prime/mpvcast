@@ -18,12 +18,10 @@ pub struct ErrorEntry {
 }
 
 /// The loaded item and everything that only means something while one is
-/// loaded. Null while mpv is idle, so neither the type nor a client reading
-/// the JSON can pick up a position belonging to a track that has ended.
+/// loaded. Null while mpv is idle.
 ///
-/// `position` and `duration` stay optional even here: mpv reports a file as
-/// loaded before it has resolved either, and duration never resolves at all
-/// for a live stream.
+/// `position` and `duration` are null until mpv resolves them, and
+/// `duration` stays null for a live stream.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Playback {
     pub paused: bool,
@@ -79,8 +77,8 @@ impl From<&StatusSnapshot> for Status {
     }
 }
 
-/// mpv's own volume range runs past 100, so the API caps it. The fallback
-/// covers only the window between connecting and mpv's first report.
+/// mpv's volume, rounded and clamped to 0 through 100. Until mpv has reported
+/// its volume, this is 100.
 fn volume(reported: Option<f64>) -> u8 {
     reported.unwrap_or(100.0).clamp(0.0, 100.0).round() as u8
 }

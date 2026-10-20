@@ -24,14 +24,12 @@ pub enum MpvProcessError {
     Mpv(#[from] MpvError),
 }
 
-/// Asks the kernel to signal mpv when this process dies. `kill_on_drop`
-/// covers a tidy exit, but a process killed outright runs no destructors,
-/// which would leave a fullscreen player on screen with nothing driving it.
-///
-/// `PR_SET_PDEATHSIG` is armed against the spawning *thread* rather than the
-/// process. tokio's workers live as long as the runtime, so mpv outlives
-/// every thread that could plausibly spawn it here.
+/// Has the kernel send mpv SIGTERM when this process dies, even if it is
+/// killed outright.
 fn bind_lifetime_to_parent(command: &mut Command) {
+    // PR_SET_PDEATHSIG is armed against the spawning thread rather than the
+    // process. tokio's workers live as long as the runtime, so no thread that
+    // could spawn mpv here dies before the process does.
     let parent = std::process::id() as libc::pid_t;
     // SAFETY: the closure runs in the forked child before exec, so it may
     // only call async-signal-safe functions. prctl, getppid and _exit are.
@@ -79,6 +77,8 @@ impl MpvProcess {
         command
             .arg(format!("--input-ipc-server={}", socket_path.display()))
             .args(extra_args)
+            // Covers a tidy exit. A process killed outright runs no
+            // destructors, which is what bind_lifetime_to_parent is for.
             .kill_on_drop(true);
         bind_lifetime_to_parent(&mut command);
         let child = command.spawn()?;

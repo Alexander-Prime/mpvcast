@@ -26,9 +26,7 @@ type AppState = Arc<MpvClient>;
 const DEFAULT_PORT: u16 = 4590;
 
 /// Reads `--port <number>` from the arguments, falling back to
-/// [`DEFAULT_PORT`]. Anything unrecognised is an error rather than being
-/// ignored, so a mistyped flag can't leave the server quietly listening
-/// somewhere other than where it was told to.
+/// [`DEFAULT_PORT`]. Any other argument is an error.
 fn parse_port(mut args: impl Iterator<Item = String>) -> Result<u16, String> {
     let mut port = DEFAULT_PORT;
     while let Some(arg) = args.next() {
@@ -39,6 +37,8 @@ fn parse_port(mut args: impl Iterator<Item = String>) -> Result<u16, String> {
                     .parse()
                     .map_err(|_| format!("not a port number: {value}"))?;
             }
+            // Ignoring it could leave the server quietly listening somewhere
+            // other than where a mistyped flag meant to put it.
             other => return Err(format!("unrecognised argument: {other}")),
         }
     }
@@ -184,8 +184,8 @@ struct QueueItem {
     url: String,
 }
 
-/// Appends to mpv's playlist with `append-play`, so sharing a URL at an idle
-/// player starts it while an item already playing carries on undisturbed.
+/// Adds the URL to the end of the queue. An idle player starts playing it,
+/// and an item already playing carries on undisturbed.
 async fn append_to_queue(
     State(client): State<AppState>,
     Json(item): Json<QueueItem>,
