@@ -62,7 +62,9 @@ $("scrubber").addEventListener("change", async () => {
 function render({ status, queue }) {
   const playing = status.playback;
   paused = !playing || playing.paused;
-  $("playpause").textContent = paused ? "⏵" : "⏸";
+  $("playpause")
+    .querySelector("use")
+    .setAttribute("href", paused ? "#icon-play" : "#icon-pause");
   $("playpause").title = paused ? "Play" : "Pause";
   $("playpause").ariaLabel = $("playpause").title;
   $("title").textContent = playing
