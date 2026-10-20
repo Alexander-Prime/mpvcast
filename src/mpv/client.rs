@@ -100,6 +100,7 @@ impl MpvClient {
             ("playlist", 6),
             ("playlist-pos", 7),
             ("media-title", 8),
+            ("ytdl-format", 9),
         ];
         for (name, id) in PROPS {
             self.send(vec![json!("observe_property"), json!(id), json!(name)])
@@ -121,11 +122,6 @@ impl MpvClient {
     pub async fn loadfile(&self, url: &str) -> Result<()> {
         self.send(vec![json!("loadfile"), json!(url), json!("append-play")])
             .await?;
-        Ok(())
-    }
-
-    pub async fn playlist_clear(&self) -> Result<()> {
-        self.send(vec![json!("playlist-clear")]).await?;
         Ok(())
     }
 
@@ -413,15 +409,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn playlist_clear_sends_expected_command() {
-        let (client_side, mpv_side) = tokio::io::duplex(1024);
-        let client = MpvClient::new(client_side);
-        let mpv_task = scripted_mpv(mpv_side, json!(["playlist-clear"]), json!(null));
-        client.playlist_clear().await.unwrap();
-        mpv_task.await.unwrap();
-    }
-
-    #[tokio::test]
     async fn playlist_next_sends_expected_command() {
         let (client_side, mpv_side) = tokio::io::duplex(1024);
         let client = MpvClient::new(client_side);
@@ -671,7 +658,7 @@ mod tests {
             let (read_half, mut write_half) = tokio::io::split(mpv_side);
             let mut reader = BufReader::new(read_half);
             let mut names = Vec::new();
-            for _ in 0..8 {
+            for _ in 0..9 {
                 let mut line = String::new();
                 reader.read_line(&mut line).await.unwrap();
                 let cmd: Value = serde_json::from_str(line.trim()).unwrap();
@@ -709,6 +696,7 @@ mod tests {
             "playlist",
             "playlist-pos",
             "media-title",
+            "ytdl-format",
         ] {
             assert!(
                 names.iter().any(|n| n == expected),

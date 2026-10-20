@@ -1,3 +1,4 @@
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,6 +8,9 @@ use tokio::process::{Child, Command};
 use tokio::time::Instant;
 
 use crate::mpv::client::{MpvClient, MpvError};
+use crate::mpv::ytdl;
+
+const DEFAULT_MAX_HEIGHT: NonZeroU32 = NonZeroU32::new(1080).unwrap();
 
 #[derive(Debug, thiserror::Error)]
 pub enum MpvProcessError {
@@ -54,13 +58,14 @@ pub struct MpvProcess {
 
 impl MpvProcess {
     pub async fn spawn() -> Result<Self, MpvProcessError> {
+        let ytdl_format = format!("--ytdl-format={}", ytdl::format(DEFAULT_MAX_HEIGHT));
         Self::spawn_inner(&[
             "--idle=yes",
             "--force-window=immediate",
             "--fullscreen",
             "--hwdec=auto-safe",
             "--ytdl=yes",
-            "--ytdl-format=bestvideo[height<=?1080]+bestaudio/best",
+            &ytdl_format,
             "--auto-window-resize=no",
         ])
         .await

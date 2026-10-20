@@ -14,6 +14,7 @@ pub struct StatusSnapshot {
     pub playlist: Vec<PlaylistEntry>,
     pub playlist_pos: Option<i64>,
     pub media_title: Option<String>,
+    pub ytdl_format: Option<String>,
     pub errors: Vec<StatusError>,
 }
 
@@ -82,6 +83,7 @@ impl StatusSnapshot {
             "mute" => set(&mut self.mute, data.as_bool()),
             "playlist-pos" => set(&mut self.playlist_pos, data.as_i64()),
             "media-title" => set(&mut self.media_title, data.as_str().map(String::from)),
+            "ytdl-format" => set(&mut self.ytdl_format, data.as_str().map(String::from)),
             "playlist" => match data.as_array() {
                 Some(arr) => {
                     let entries = arr
@@ -157,6 +159,16 @@ mod tests {
             json!({"event": "property-change", "id": 3, "name": "duration"}),
         ));
         assert_eq!(snapshot.duration, None);
+    }
+
+    #[test]
+    fn the_ytdl_format_is_tracked() {
+        let mut snapshot = StatusSnapshot::default();
+        let changed = snapshot.apply_event(&event(
+            json!({"event": "property-change", "id": 9, "name": "ytdl-format", "data": "best"}),
+        ));
+        assert!(changed);
+        assert_eq!(snapshot.ytdl_format.as_deref(), Some("best"));
     }
 
     #[test]

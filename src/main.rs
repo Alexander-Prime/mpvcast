@@ -7,6 +7,7 @@ use axum::{
 };
 use futures_util::{Stream, stream};
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
@@ -16,6 +17,7 @@ mod mpv;
 use crate::mpv::client::{MpvClient, MpvError, Seek, SignedDuration};
 use crate::mpv::process::MpvProcess;
 use crate::mpv::snapshot::StatusSnapshot;
+use crate::mpv::ytdl;
 
 type AppState = Arc<MpvClient>;
 
@@ -153,6 +155,7 @@ async fn events(
 struct StatusPatch {
     volume: Option<u8>,
     muted: Option<bool>,
+    max_height: Option<NonZeroU32>,
 }
 
 async fn patch_status(
@@ -167,6 +170,11 @@ async fn patch_status(
     }
     if let Some(muted) = patch.muted {
         client.set_property("mute", muted).await?;
+    }
+    if let Some(max_height) = patch.max_height {
+        client
+            .set_property("ytdl-format", ytdl::format(max_height))
+            .await?;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -494,6 +502,7 @@ mod tests {
                 "playback": null,
                 "volume": 100,
                 "muted": false,
+                "max_height": null,
                 "errors": [],
             })
         );
@@ -683,6 +692,37 @@ mod tests {
         let (client, mpv) = loaded_with_mpv(0).await;
         let response = send_json(client, "PATCH", "/status", json!({"volume": 150})).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(mpv.await.unwrap(), Vec::<Value>::new());
+    }
+
+    #[tokio::test]
+    async fn patching_the_max_height_sets_the_ytdl_format() {
+        let (client, mpv) = loaded_with_mpv(1).await;
+        let response = send_json(client, "PATCH", "/status", json!({"max_height": 720})).await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let commands = tokio::time::timeout(Duration::from_secs(1), mpv)
+            .await
+            .expect("timed out waiting for the set_property command")
+            .unwrap();
+        assert_eq!(
+            commands,
+            vec![json!([
+                "set_property",
+                "ytdl-format",
+                ytdl::format(NonZeroU32::new(720).unwrap())
+            ])]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_zero_max_height_is_rejected() {
+        let (client, mpv) = loaded_with_mpv(0).await;
+        let response = send_json(client, "PATCH", "/status", json!({"max_height": 0})).await;
+        assert!(
+            response.status().is_client_error(),
+            "got {}",
+            response.status()
+        );
         assert_eq!(mpv.await.unwrap(), Vec::<Value>::new());
     }
 

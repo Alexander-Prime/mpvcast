@@ -1,6 +1,8 @@
 use serde::Serialize;
+use std::num::NonZeroU32;
 
 use crate::mpv::snapshot::StatusSnapshot;
+use crate::mpv::ytdl;
 
 /// A queue entry, and the shape of the currently playing item. `title` comes
 /// from media metadata and stays `None` until mpv has resolved it.
@@ -36,6 +38,9 @@ pub struct Status {
     pub playback: Option<Playback>,
     pub volume: u8,
     pub muted: bool,
+    /// The video height cap for the next item mpv loads. Null when mpv's
+    /// format was not set through mpvcast, so there is no cap to report.
+    pub max_height: Option<NonZeroU32>,
     pub errors: Vec<ErrorEntry>,
 }
 
@@ -62,6 +67,7 @@ impl From<&StatusSnapshot> for Status {
             playback,
             volume: volume(snapshot.volume),
             muted: snapshot.mute.unwrap_or(false),
+            max_height: snapshot.ytdl_format.as_deref().and_then(ytdl::max_height),
             errors: snapshot
                 .errors
                 .iter()
@@ -119,6 +125,7 @@ mod tests {
             ],
             playlist_pos: Some(1),
             media_title: Some("Resolved Title".to_string()),
+            ytdl_format: Some(ytdl::format(NonZeroU32::new(1080).unwrap())),
             errors: Vec::new(),
         }
     }
@@ -196,6 +203,26 @@ mod tests {
     }
 
     #[test]
+    fn a_format_built_by_mpvcast_reports_its_height_cap() {
+        let snapshot = StatusSnapshot {
+            ytdl_format: Some(ytdl::format(NonZeroU32::new(720).unwrap())),
+            ..loaded_snapshot()
+        };
+        assert_eq!(Status::from(&snapshot).max_height, NonZeroU32::new(720));
+    }
+
+    #[test]
+    fn any_other_format_reports_no_height_cap() {
+        for ytdl_format in [None, Some("best".to_string())] {
+            let snapshot = StatusSnapshot {
+                ytdl_format,
+                ..loaded_snapshot()
+            };
+            assert_eq!(Status::from(&snapshot).max_height, None);
+        }
+    }
+
+    #[test]
     fn errors_are_carried_through() {
         let snapshot = StatusSnapshot {
             errors: vec![StatusError {
@@ -244,6 +271,7 @@ mod tests {
                 },
                 "volume": 80,
                 "muted": false,
+                "max_height": 1080,
                 "errors": [],
             })
         );
@@ -260,6 +288,7 @@ mod tests {
                 "playback": null,
                 "volume": 100,
                 "muted": false,
+                "max_height": null,
                 "errors": [],
             })
         );

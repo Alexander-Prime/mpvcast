@@ -51,6 +51,10 @@ $("volume").addEventListener("change", async () => {
   await send("PATCH", "/status", { volume: Number($("volume").value) });
 });
 
+$("quality").addEventListener("change", async () => {
+  await send("PATCH", "/status", { max_height: Number($("quality").value) });
+});
+
 $("scrubber").addEventListener("input", () => (scrubbing = true));
 $("scrubber").addEventListener("change", async () => {
   scrubbing = false;
@@ -85,6 +89,10 @@ function render({ status, queue }) {
   $("mute").title = $("mute").textContent;
   $("mute").ariaLabel = $("mute").textContent;
   if (!adjusting) $("volume").value = status.volume;
+
+  // A cap with no matching option selects nothing, so show it as Custom.
+  $("quality").value = status.max_height ?? "";
+  if ($("quality").selectedIndex === -1) $("quality").value = "";
 
   $("errors").textContent = status.errors.map((error) => error.message).join("\n");
 
