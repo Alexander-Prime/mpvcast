@@ -26,6 +26,28 @@ select {
   padding: 0.5rem;
 }
 
+#add-dialog {
+  width: min(36rem, calc(100% - 2rem));
+  box-sizing: border-box;
+}
+
+#add-dialog::backdrop {
+  background: rgb(0 0 0 / 0.6);
+}
+
+#add {
+  flex-direction: column;
+}
+
+#add-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+#add-actions button {
+  flex: 1;
+}
+
 #transport {
   display: flex;
   gap: 0.5rem;

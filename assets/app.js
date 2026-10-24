@@ -17,11 +17,15 @@ const clock = (seconds) => {
   return `${minutes}:${String(whole % 60).padStart(2, "0")}`;
 };
 
+$("add-link").addEventListener("click", () => $("add-dialog").showModal());
+$("add-cancel").addEventListener("click", () => $("add-dialog").close());
+// Covers Esc and every button, so a dismissed link never reappears.
+$("add-dialog").addEventListener("close", () => $("add").reset());
+
 $("add").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const field = event.target.url;
-  await send("POST", "/queue", { url: field.value });
-  field.value = "";
+  await send("POST", "/queue", { url: event.target.url.value });
+  $("add-dialog").close();
 });
 
 $("clear").addEventListener("click", async () => {

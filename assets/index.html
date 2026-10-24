@@ -31,10 +31,24 @@
 
     <h1>mpvcast</h1>
 
-    <form id="add">
-      <input type="url" name="url" placeholder="Paste a link" required />
-      <button>Add</button>
-    </form>
+    <button id="add-link">Add link</button>
+
+    <dialog id="add-dialog">
+      <form id="add">
+        <input
+          type="url"
+          name="url"
+          placeholder="Paste a link"
+          aria-label="Link"
+          required
+          autofocus
+        />
+        <div id="add-actions">
+          <button>Add to queue</button>
+          <button type="button" id="add-cancel">Cancel</button>
+        </div>
+      </form>
+    </dialog>
 
     <p id="title">Nothing playing</p>
     <input id="scrubber" type="range" min="0" max="0" step="1" value="0" />
