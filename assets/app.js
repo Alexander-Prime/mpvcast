@@ -3,6 +3,7 @@ let scrubbing = false;
 let adjusting = false;
 let paused = true;
 let muted = false;
+let renderedQueue = null;
 
 const send = (method, path, body) =>
   fetch(path, {
@@ -100,11 +101,24 @@ function render({ status, queue }) {
 
   $("errors").textContent = status.errors.map((error) => error.message).join("\n");
 
+  const queueState = JSON.stringify([queue, playing?.current_index]);
+  if (queueState !== renderedQueue) {
+    renderedQueue = queueState;
+    renderQueue(queue, playing?.current_index);
+  }
+}
+
+function renderQueue(queue, currentIndex) {
   $("queue").replaceChildren(
     ...queue.map((track, index) => {
+      const button = document.createElement("button");
+      button.textContent = track.title ?? track.url;
+      button.addEventListener("click", async () => {
+        await send("PUT", "/playback/current_index", { index });
+      });
       const item = document.createElement("li");
-      item.textContent = track.title ?? track.url;
-      if (index === playing?.current_index) item.className = "current";
+      item.append(button);
+      if (index === currentIndex) item.className = "current";
       return item;
     }),
   );

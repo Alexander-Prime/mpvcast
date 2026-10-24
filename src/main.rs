@@ -86,6 +86,7 @@ fn router(state: AppState) -> Router {
             "/playback/position",
             put(set_position).patch(adjust_position),
         )
+        .route("/playback/current_index", put(set_current_index))
         .route("/events", get(events))
         .with_state(state)
 }
@@ -226,6 +227,24 @@ async fn previous(State(client): State<AppState>) -> Result<StatusCode, ApiError
 }
 
 #[derive(Deserialize)]
+struct QueueIndex {
+    index: usize,
+}
+
+/// Plays the queue item at `index`, leaving the rest of the queue in place.
+async fn set_current_index(
+    State(client): State<AppState>,
+    Json(body): Json<QueueIndex>,
+) -> Result<StatusCode, ApiError> {
+    if body.index >= client.status_snapshot().playlist.len() {
+        return Err(ApiError::NotInQueue);
+    }
+    client.set_property("playlist-pos", body.index).await?;
+    client.set_property("pause", false).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
 struct AbsolutePosition {
     seconds: f64,
 }
@@ -271,6 +290,8 @@ async fn apply_seek(client: &AppState, seek: Seek) -> Result<StatusCode, ApiErro
 enum ApiError {
     /// The request needs a loaded item and there isn't one.
     NothingLoaded,
+    /// A queue index past the end of the queue.
+    NotInQueue,
     /// A volume outside the 0 to 100 the API declares.
     VolumeOutOfRange,
     /// mpv refused or never answered. The request itself was well formed,
@@ -287,7 +308,7 @@ impl From<MpvError> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         match self {
-            Self::NothingLoaded => StatusCode::CONFLICT.into_response(),
+            Self::NothingLoaded | Self::NotInQueue => StatusCode::CONFLICT.into_response(),
             Self::VolumeOutOfRange => StatusCode::BAD_REQUEST.into_response(),
             Self::MpvUnavailable(error) => {
                 tracing::error!("mpv command failed: {error}");
@@ -591,6 +612,42 @@ mod tests {
             mpv.await.unwrap(),
             vec![json!(["set_property", "pause", false])]
         );
+    }
+
+    #[tokio::test]
+    async fn setting_the_current_index_plays_that_item() {
+        let (client, mpv) = loaded_with_mpv(2).await;
+
+        let response = send_json(
+            client,
+            "PUT",
+            "/playback/current_index",
+            json!({"index": 0}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            mpv.await.unwrap(),
+            vec![
+                json!(["set_property", "playlist-pos", 0]),
+                json!(["set_property", "pause", false]),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_index_past_the_end_of_the_queue_is_a_conflict() {
+        let (client, mpv) = loaded_with_mpv(0).await;
+
+        let response = send_json(
+            client,
+            "PUT",
+            "/playback/current_index",
+            json!({"index": 1}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(mpv.await.unwrap(), Vec::<Value>::new());
     }
 
     async fn text_body(response: Response) -> String {
